@@ -11,7 +11,7 @@ target/
 *.jar
 *.war
 *.ear
-log-jni/java/target/
+log/target/
 benchmark-driver/target/
 
 # Benchmark results

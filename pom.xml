@@ -4,33 +4,21 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.opendata</groupId>
-    <artifactId>opendata-omb</artifactId>
+    <groupId>dev.opendata</groupId>
+    <artifactId>opendata-java</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
-    <name>OpenData OMB</name>
-    <description>OpenMessaging Benchmark driver for OpenData Log</description>
+    <name>OpenData Java</name>
+    <description>Java bindings for OpenData systems</description>
 
     <modules>
-        <module>log-jni/java</module>
-        <module>benchmark-driver</module>
+        <module>log</module>
     </modules>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <omb.version>0.0.1-SNAPSHOT</omb.version>
     </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>io.openmessaging.benchmark</groupId>
-                <artifactId>benchmark-framework</artifactId>
-                <version>${omb.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 </project>

@@ -1,0 +1,820 @@
+//! JNI bindings for OpenData Log.
+//!
+//! This crate provides Java Native Interface bindings to the OpenData Log,
+//! enabling use from the OpenMessaging Benchmark framework.
+//!
+//! # Timestamp Header
+//!
+//! The upstream Log API does not yet support timestamps. To enable OMB latency
+//! measurement, this layer prepends an 8-byte timestamp header to each value:
+//!
+//! ```text
+//! ┌─────────────────────┬──────────────────────┐
+//! │ timestamp_ms (8B)   │ original payload     │
+//! │ big-endian i64      │                      │
+//! └─────────────────────┴──────────────────────┘
+//! ```
+//!
+//! - On `append`: current wall-clock time is prepended to the value
+//! - On `read`: timestamp is extracted from the header and returned separately
+//!
+//! This is transparent to the Java caller and will be removed once upstream
+//! adds native timestamp support.
+//!
+//! # Benchmark Overhead
+//!
+//! These bindings introduce overhead compared to native Rust usage. When
+//! interpreting OMB results, consider the following costs:
+//!
+//! ## Data Copies
+//!
+//! | Operation | Copies | Notes |
+//! |-----------|--------|-------|
+//! | `append(key, value)` | 1 + 1 | key: Java→Rust; value: Java→Rust (directly into timestamped buffer) |
+//! | `read()` → entries | 2 per entry | Rust `Bytes` → Java `byte[]` for key and value |
+//!
+//! The value copy on append is optimized using `get_byte_array_region` to copy
+//! directly into a pre-allocated buffer that includes space for the timestamp
+//! header, avoiding an intermediate allocation.
+//!
+//! ## Async Runtime
+//!
+//! The Log API is async, but JNI calls are synchronous. We maintain a global
+//! Tokio runtime and use `block_on()` for each operation. This adds:
+//! - Thread context switching overhead
+//! - Potential contention on the runtime's task scheduler
+//!
+//! ## JNI Call Overhead
+//!
+//! Each native method invocation has baseline JNI overhead (~tens of nanoseconds)
+//! for argument marshalling and stack frame setup. This is negligible for
+//! non-trivial operations but adds up for high-frequency calls.
+//!
+//! ## Comparison Baseline
+//!
+//! For fair comparison with systems like WarpStream (which use native clients),
+//! consider that this JNI layer adds constant overhead per operation. The
+//! overhead should be relatively smaller for larger payloads and batch sizes.
+
+use bytes::Bytes;
+use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+use jni::sys::{jlong, jobject, jobjectArray};
+use jni::JNIEnv;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::runtime::{Handle, Runtime};
+
+/// Size of the timestamp header prepended to values.
+const TIMESTAMP_HEADER_SIZE: usize = 8;
+
+/// Returns current wall-clock time as milliseconds since Unix epoch.
+fn current_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before Unix epoch")
+        .as_millis() as i64
+}
+
+// Re-export log crate types with explicit naming to avoid confusion with std log
+use common::storage::config::{
+    AwsObjectStoreConfig, LocalObjectStoreConfig, ObjectStoreConfig, SlateDbStorageConfig,
+    StorageConfig,
+};
+use log::{AppendResult, Config, Log, LogBuilder, LogEntry, LogRead, Record};
+
+/// Handle to a Log instance with its associated Tokio runtime.
+///
+/// Uses block_on for JNI operations. A separate compaction runtime is used for
+/// SlateDB's compaction/GC tasks to prevent deadlock when the main runtime's
+/// threads are blocked in JNI calls.
+struct LogHandle {
+    /// The Log instance
+    log: Log,
+    /// Handle to the runtime for async operations
+    runtime_handle: Handle,
+    /// The main runtime (kept alive for the lifetime of the Log)
+    runtime: Option<Runtime>,
+    /// Separate runtime for SlateDB compaction/GC tasks
+    compaction_runtime: Option<Runtime>,
+}
+
+// =============================================================================
+// Log JNI Methods
+// =============================================================================
+
+/// Creates a new Log instance with the specified storage configuration.
+///
+/// # Arguments
+/// * `storage_type` - "IN_MEMORY" or "SLATEDB"
+/// * `path` - Data path for SlateDB storage
+/// * `object_store` - "in-memory", "local", or "s3"
+/// * `s3_bucket` - S3 bucket name (nullable)
+/// * `s3_region` - S3 region (nullable)
+/// * `settings_path` - Path to SlateDB settings file (nullable)
+///
+/// # Safety
+/// JNI function - must be called from Java with valid JNIEnv.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    storage_type: JString<'local>,
+    path: JString<'local>,
+    object_store: JString<'local>,
+    s3_bucket: JString<'local>,
+    s3_region: JString<'local>,
+    settings_path: JString<'local>,
+) -> jlong {
+    // Parse storage type
+    let storage_type_str: String = match env.get_string(&storage_type) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
+            return 0;
+        }
+    };
+
+    // Build storage config based on type
+    let storage_config = match storage_type_str.as_str() {
+        "IN_MEMORY" => StorageConfig::InMemory,
+        "SLATEDB" => {
+            let path_str: String = match env.get_string(&path) {
+                Ok(s) => s.into(),
+                Err(e) => {
+                    let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
+                    return 0;
+                }
+            };
+
+            let object_store_str: String = match env.get_string(&object_store) {
+                Ok(s) => s.into(),
+                Err(e) => {
+                    let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
+                    return 0;
+                }
+            };
+
+            let object_store_config = match object_store_str.as_str() {
+                "in-memory" => ObjectStoreConfig::InMemory,
+                "local" => ObjectStoreConfig::Local(LocalObjectStoreConfig {
+                    path: path_str.clone(),
+                }),
+                "s3" => {
+                    let bucket = get_optional_string(&mut env, &s3_bucket).unwrap_or_default();
+                    let region = get_optional_string(&mut env, &s3_region).unwrap_or_default();
+                    ObjectStoreConfig::Aws(AwsObjectStoreConfig { bucket, region })
+                }
+                _ => {
+                    let _ = env.throw_new(
+                        "java/lang/IllegalArgumentException",
+                        format!("Unknown object store type: {}", object_store_str),
+                    );
+                    return 0;
+                }
+            };
+
+            let settings = get_optional_string(&mut env, &settings_path);
+
+            StorageConfig::SlateDb(SlateDbStorageConfig {
+                path: path_str,
+                object_store: object_store_config,
+                settings_path: settings,
+            })
+        }
+        _ => {
+            let _ = env.throw_new(
+                "java/lang/IllegalArgumentException",
+                format!("Unknown storage type: {}", storage_type_str),
+            );
+            return 0;
+        }
+    };
+
+    let config = Config {
+        storage: storage_config,
+        ..Config::default()
+    };
+
+    // Create a dedicated runtime for this Log instance (for user operations)
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("opendata-log")
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            return 0;
+        }
+    };
+
+    // Create a SEPARATE runtime for SlateDB compaction/GC tasks.
+    // This prevents deadlock when the main runtime's threads are blocked in JNI calls
+    // while SlateDB's background tasks need to make progress.
+    let compaction_runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("opendata-compaction")
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            return 0;
+        }
+    };
+
+    // Open the Log using LogBuilder with separate compaction runtime
+    let result = runtime.block_on(async {
+        LogBuilder::new(config)
+            .with_compaction_runtime(compaction_runtime.handle().clone())
+            .build()
+            .await
+    });
+
+    match result {
+        Ok(log) => {
+            let handle = Box::new(LogHandle {
+                log,
+                runtime_handle: runtime.handle().clone(),
+                runtime: Some(runtime),
+                compaction_runtime: Some(compaction_runtime),
+            });
+            Box::into_raw(handle) as jlong
+        }
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            0
+        }
+    }
+}
+
+/// Helper to get an optional string from a potentially null JString.
+fn get_optional_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
+    if s.is_null() {
+        return None;
+    }
+    env.get_string(s).ok().map(|s| s.into())
+}
+
+/// Appends a record to the log with a timestamp header.
+///
+/// The value is stored as: `[8-byte timestamp (big-endian i64)] + [original payload]`
+///
+/// # Arguments
+/// * `handle` - Native Log pointer
+/// * `key` - Record key as byte array
+/// * `value` - Record value as byte array (timestamp will be prepended)
+///
+/// # Returns
+/// AppendResult jobject with start_sequence and timestamp
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    key: JByteArray<'local>,
+    value: JByteArray<'local>,
+) -> jobject {
+    if handle == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "Log handle is null");
+        return std::ptr::null_mut();
+    }
+
+    let log_handle = unsafe { &*(handle as *const LogHandle) };
+
+    // Convert key: Java byte[] → Rust Bytes (one copy)
+    let key_bytes = match env.convert_byte_array(&key) {
+        Ok(b) => Bytes::from(b),
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    // Get timestamp before copying value (closer to actual append time)
+    let timestamp_ms = current_timestamp_ms();
+
+    // Convert value with timestamp header: single copy directly into final buffer
+    let value_bytes = match copy_value_with_timestamp(&mut env, &value, timestamp_ms) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    let record = Record {
+        key: key_bytes,
+        value: value_bytes,
+    };
+
+    // Use block_on with separate compaction runtime to avoid deadlocks
+    let result = log_handle
+        .runtime_handle
+        .block_on(async { log_handle.log.append(vec![record]).await });
+
+    match result {
+        Ok(append_result) => {
+            // Create Java AppendResult object with actual timestamp
+            match create_append_result(&mut env, &append_result, timestamp_ms) {
+                Ok(obj) => obj.into_raw(),
+                Err(e) => {
+                    let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+                    std::ptr::null_mut()
+                }
+            }
+        }
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Copies a Java byte array into a Rust buffer with a prepended timestamp header.
+///
+/// This avoids an intermediate allocation by copying directly into the final buffer.
+fn copy_value_with_timestamp(
+    env: &mut JNIEnv<'_>,
+    value: &JByteArray<'_>,
+    timestamp_ms: i64,
+) -> Result<Bytes, jni::errors::Error> {
+    let payload_len = env.get_array_length(value)? as usize;
+
+    // Allocate final buffer: 8-byte header + payload
+    let mut buffer = vec![0u8; TIMESTAMP_HEADER_SIZE + payload_len];
+
+    // Write timestamp header (big-endian)
+    buffer[..TIMESTAMP_HEADER_SIZE].copy_from_slice(&timestamp_ms.to_be_bytes());
+
+    // Copy payload directly from Java into buffer, avoiding intermediate Vec
+    if payload_len > 0 {
+        // Safety: buffer[TIMESTAMP_HEADER_SIZE..] has exactly payload_len bytes
+        // get_byte_array_region expects i8 slice, so we need to cast
+        let dest = &mut buffer[TIMESTAMP_HEADER_SIZE..];
+        let dest_i8 =
+            unsafe { std::slice::from_raw_parts_mut(dest.as_mut_ptr() as *mut i8, payload_len) };
+        env.get_byte_array_region(value, 0, dest_i8)?;
+    }
+
+    Ok(Bytes::from(buffer))
+}
+
+/// Closes and frees a Log instance and its associated runtime.
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_Log_nativeClose<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        let log_handle = unsafe { Box::from_raw(handle as *mut LogHandle) };
+
+        // Destructure to take ownership of components
+        let LogHandle {
+            log,
+            runtime_handle,
+            runtime,
+            compaction_runtime,
+        } = *log_handle;
+
+        // Close the log using block_on
+        let result = runtime_handle.block_on(async { log.close().await });
+
+        if let Err(e) = result {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+        }
+
+        // Shutdown the runtimes
+        if let Some(rt) = compaction_runtime {
+            rt.shutdown_background();
+        }
+        if let Some(rt) = runtime {
+            rt.shutdown_background();
+        }
+    }
+}
+
+// =============================================================================
+// LogReader JNI Methods
+// =============================================================================
+
+/// Holds state for a Java LogReader: a reference back to the parent LogHandle.
+///
+/// Since `Log` implements `LogRead`, we use the parent Log for reading operations
+/// rather than creating a separate `LogReader` instance (which would have its own
+/// isolated storage).
+struct ReaderState {
+    /// Handle to the parent LogHandle (borrowed, not owned - LogHandle outlives readers)
+    log_handle_ptr: jlong,
+}
+
+/// Creates a new LogReader instance.
+///
+/// The reader shares storage with the parent Log by keeping a reference to it.
+/// Key and sequence are specified per-read operation.
+///
+/// # Safety
+/// JNI function - must be called from Java with valid JNIEnv.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_LogReader_nativeCreate<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    log_handle_ptr: jlong,
+) -> jlong {
+    if log_handle_ptr == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "Log handle is null");
+        return 0;
+    }
+
+    // Store the LogHandle pointer - we'll use it to access the Log and its runtime
+    let state = ReaderState { log_handle_ptr };
+    Box::into_raw(Box::new(state)) as jlong
+}
+
+/// Reads entries from the log for a given key.
+///
+/// Uses the parent Log (which implements LogRead) to scan entries.
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_LogReader_nativeRead<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    key: JByteArray<'local>,
+    start_sequence: jlong,
+    max_entries: jlong,
+) -> jobjectArray {
+    if handle == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "Reader handle is null");
+        return std::ptr::null_mut();
+    }
+
+    let state = unsafe { &*(handle as *const ReaderState) };
+
+    // Validate the parent LogHandle
+    if state.log_handle_ptr == 0 {
+        let _ = env.throw_new(
+            "java/lang/IllegalStateException",
+            "Parent Log handle is null",
+        );
+        return std::ptr::null_mut();
+    }
+
+    let log_handle = unsafe { &*(state.log_handle_ptr as *const LogHandle) };
+
+    let key_bytes = match env.convert_byte_array(&key) {
+        Ok(b) => Bytes::from(b),
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    let max = max_entries as usize;
+    let start_seq = start_sequence as u64;
+
+    // Scan entries using the parent Log (which implements LogRead)
+    // Use block_on with separate compaction runtime to avoid deadlocks
+    let entries_result = log_handle.runtime_handle.block_on(async {
+        let mut iter = log_handle.log.scan(key_bytes, start_seq..).await?;
+        let mut entries = Vec::with_capacity(max);
+        while entries.len() < max {
+            match iter.next().await? {
+                Some(entry) => entries.push(entry),
+                None => break,
+            }
+        }
+        Ok::<Vec<LogEntry>, log::Error>(entries)
+    });
+
+    match entries_result {
+        Ok(entries) => match create_log_entry_array(&mut env, &entries) {
+            Ok(arr) => arr,
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Closes and frees a LogReader instance.
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+pub extern "system" fn Java_dev_opendata_LogReader_nativeClose<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        let _ = unsafe { Box::from_raw(handle as *mut ReaderState) };
+        // ReaderState drops automatically
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Creates a Java AppendResult object from a Rust AppendResult.
+fn create_append_result<'local>(
+    env: &mut JNIEnv<'local>,
+    result: &AppendResult,
+    timestamp_ms: i64,
+) -> Result<JObject<'local>, jni::errors::Error> {
+    let class = env.find_class("dev/opendata/AppendResult")?;
+
+    // AppendResult is a record with (long sequence, long timestamp)
+    let obj = env.new_object(
+        class,
+        "(JJ)V",
+        &[
+            JValue::Long(result.start_sequence as i64),
+            JValue::Long(timestamp_ms),
+        ],
+    )?;
+
+    Ok(obj)
+}
+
+/// Creates a Java LogEntry[] array from Rust LogEntry vector.
+///
+/// Extracts the timestamp header from each entry's value and returns the
+/// original payload (without header) to Java.
+fn create_log_entry_array<'local>(
+    env: &mut JNIEnv<'local>,
+    entries: &[LogEntry],
+) -> Result<jobjectArray, jni::errors::Error> {
+    let class = env.find_class("dev/opendata/LogEntry")?;
+
+    let array = env.new_object_array(entries.len() as i32, &class, JObject::null())?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        // Extract timestamp from header and get original payload
+        let (timestamp_ms, payload) = extract_timestamp_and_payload(&entry.value);
+
+        let key_arr = env.byte_array_from_slice(&entry.key)?;
+        let value_arr = env.byte_array_from_slice(payload)?;
+
+        // LogEntry is a record with (long sequence, long timestamp, byte[] key, byte[] value)
+        let obj = env.new_object(
+            &class,
+            "(JJ[B[B)V",
+            &[
+                JValue::Long(entry.sequence as i64),
+                JValue::Long(timestamp_ms),
+                JValue::Object(&key_arr.into()),
+                JValue::Object(&value_arr.into()),
+            ],
+        )?;
+
+        env.set_object_array_element(&array, i as i32, &obj)?;
+    }
+
+    Ok(array.into_raw())
+}
+
+/// Extracts the timestamp header and original payload from a stored value.
+///
+/// Returns (timestamp_ms, payload_slice). If the value is too short to contain
+/// a header, returns (0, full_value) for graceful degradation.
+fn extract_timestamp_and_payload(value: &[u8]) -> (i64, &[u8]) {
+    if value.len() < TIMESTAMP_HEADER_SIZE {
+        // Value doesn't have header (shouldn't happen, but handle gracefully)
+        return (0, value);
+    }
+
+    let timestamp_bytes: [u8; 8] = value[..TIMESTAMP_HEADER_SIZE]
+        .try_into()
+        .expect("slice is exactly 8 bytes");
+    let timestamp_ms = i64::from_be_bytes(timestamp_bytes);
+    let payload = &value[TIMESTAMP_HEADER_SIZE..];
+
+    (timestamp_ms, payload)
+}
+
+/// Creates a value with timestamp header prepended (for testing).
+#[cfg(test)]
+fn create_timestamped_value(timestamp_ms: i64, payload: &[u8]) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(TIMESTAMP_HEADER_SIZE + payload.len());
+    buffer.extend_from_slice(&timestamp_ms.to_be_bytes());
+    buffer.extend_from_slice(payload);
+    buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // current_timestamp_ms tests
+    // =========================================================================
+
+    #[test]
+    fn should_return_reasonable_timestamp() {
+        // given
+        // Unix timestamp for 2020-01-01 00:00:00 UTC
+        let min_expected: i64 = 1_577_836_800_000;
+        // Unix timestamp for 2100-01-01 00:00:00 UTC
+        let max_expected: i64 = 4_102_444_800_000;
+
+        // when
+        let timestamp = current_timestamp_ms();
+
+        // then
+        assert!(
+            timestamp > min_expected,
+            "timestamp {} should be after 2020",
+            timestamp
+        );
+        assert!(
+            timestamp < max_expected,
+            "timestamp {} should be before 2100",
+            timestamp
+        );
+    }
+
+    #[test]
+    fn should_return_monotonically_increasing_timestamps() {
+        // given
+        let first = current_timestamp_ms();
+
+        // when
+        let second = current_timestamp_ms();
+
+        // then
+        assert!(
+            second >= first,
+            "second timestamp {} should be >= first {}",
+            second,
+            first
+        );
+    }
+
+    // =========================================================================
+    // extract_timestamp_and_payload tests
+    // =========================================================================
+
+    #[test]
+    fn should_extract_timestamp_and_payload() {
+        // given
+        let timestamp: i64 = 1_700_000_000_000;
+        let payload = b"hello world";
+        let value = create_timestamped_value(timestamp, payload);
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert_eq!(extracted_payload, payload);
+    }
+
+    #[test]
+    fn should_extract_timestamp_with_empty_payload() {
+        // given
+        let timestamp: i64 = 1_700_000_000_000;
+        let payload = b"";
+        let value = create_timestamped_value(timestamp, payload);
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert_eq!(extracted_payload, b"");
+    }
+
+    #[test]
+    fn should_handle_value_shorter_than_header() {
+        // given
+        let short_value = vec![1, 2, 3]; // Only 3 bytes, header needs 8
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&short_value);
+
+        // then - graceful degradation
+        assert_eq!(extracted_ts, 0);
+        assert_eq!(extracted_payload, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn should_handle_empty_value() {
+        // given
+        let empty_value: Vec<u8> = vec![];
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&empty_value);
+
+        // then - graceful degradation
+        assert_eq!(extracted_ts, 0);
+        assert!(extracted_payload.is_empty());
+    }
+
+    #[test]
+    fn should_handle_exactly_header_size_value() {
+        // given - value is exactly 8 bytes (header only, no payload)
+        let timestamp: i64 = 1_700_000_000_000;
+        let value = timestamp.to_be_bytes().to_vec();
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert!(extracted_payload.is_empty());
+    }
+
+    #[test]
+    fn should_preserve_large_payload() {
+        // given
+        let timestamp: i64 = 1_700_000_000_000;
+        let payload: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let value = create_timestamped_value(timestamp, &payload);
+
+        // when
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert_eq!(extracted_payload, payload.as_slice());
+    }
+
+    // =========================================================================
+    // Round-trip tests
+    // =========================================================================
+
+    #[test]
+    fn should_roundtrip_timestamp_and_payload() {
+        // given
+        let original_timestamp: i64 = 1_705_123_456_789;
+        let original_payload = b"test payload with special chars: \x00\xff\n\t";
+
+        // when - create and extract
+        let value = create_timestamped_value(original_timestamp, original_payload);
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, original_timestamp);
+        assert_eq!(extracted_payload, original_payload);
+    }
+
+    #[test]
+    fn should_roundtrip_zero_timestamp() {
+        // given
+        let timestamp: i64 = 0;
+        let payload = b"payload";
+
+        // when
+        let value = create_timestamped_value(timestamp, payload);
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, 0);
+        assert_eq!(extracted_payload, payload);
+    }
+
+    #[test]
+    fn should_roundtrip_negative_timestamp() {
+        // given - negative timestamp (before Unix epoch, unlikely but valid i64)
+        let timestamp: i64 = -1_000_000;
+        let payload = b"ancient history";
+
+        // when
+        let value = create_timestamped_value(timestamp, payload);
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert_eq!(extracted_payload, payload);
+    }
+
+    #[test]
+    fn should_roundtrip_max_timestamp() {
+        // given
+        let timestamp: i64 = i64::MAX;
+        let payload = b"far future";
+
+        // when
+        let value = create_timestamped_value(timestamp, payload);
+        let (extracted_ts, extracted_payload) = extract_timestamp_and_payload(&value);
+
+        // then
+        assert_eq!(extracted_ts, timestamp);
+        assert_eq!(extracted_payload, payload);
+    }
+}

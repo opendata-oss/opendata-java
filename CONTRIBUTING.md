@@ -1,6 +1,6 @@
-# Contributing to OpenData OMB
+# Contributing to OpenData Java
 
-Thank you for your interest in contributing! This project provides OpenMessaging Benchmark integration for OpenData Log.
+Thank you for your interest in contributing! This project provides Java bindings for OpenData systems.
 
 ## Table of Contents
 
@@ -15,12 +15,10 @@ Thank you for your interest in contributing! This project provides OpenMessaging
 
 This project contains:
 
-- `log-jni/native` - Rust JNI bindings to the OpenData Log
-- `log-jni/java` - Java interface classes
-- `benchmark-driver` - OpenMessaging Benchmark driver implementation
-- `workloads` - OMB workload configurations
+- `log/native` - Rust JNI bindings to the OpenData Log
+- `log/src` - Java interface classes (`dev.opendata` package)
 
-Before contributing, read the [README](README.md) and the related [upstream issue](https://github.com/opendata-oss/opendata/issues/130).
+Before contributing, read the [README](README.md).
 
 ## How to Contribute
 
@@ -62,25 +60,19 @@ Open an issue describing:
 ```
 your-workspace/
 ├── opendata/          # Clone of opendata repo
-└── opendata-omb/      # This project
+└── opendata-java/     # This project (opendata-omb)
 ```
 
 ### Building
 
 ```bash
 # Build native JNI library
-cd log-jni/native
+cd log/native
 cargo build --release
 
 # Build Java modules
 cd ../..
 mvn clean install -DskipTests
-```
-
-Or use the build script:
-
-```bash
-./scripts/build.sh
 ```
 
 ## Code Style
@@ -90,7 +82,7 @@ Or use the build script:
 Run `cargo fmt` before committing:
 
 ```bash
-cd log-jni/native
+cd log/native
 cargo fmt
 ```
 
@@ -105,12 +97,13 @@ cargo clippy --all-targets -- -D warnings
 - Follow standard Java conventions
 - Use 4-space indentation
 - Prefer records for immutable data classes
+- Package: `dev.opendata`
 
 ### Guidelines
 
 - Write clear, self-documenting code
 - Add comments for complex logic, especially JNI boundary handling
-- Document any benchmark overhead introduced (see `lib.rs` header)
+- Document any overhead introduced (see `lib.rs` header)
 - Prefer returning errors over panicking in JNI code
 
 ## Testing
@@ -157,19 +150,20 @@ void shouldAppendAndReadEntry() {
 
 ```bash
 # Rust tests
-cd log-jni/native
+cd log/native
 cargo test
 
-# Java tests
-mvn test
+# Java tests (requires native library built)
+mvn test -Djava.library.path=log/native/target/release
 ```
 
 ## Pull Request Process
 
 1. Ensure your code builds and tests pass
-2. Update documentation if needed
-3. Add a clear description of changes
-4. Reference any related issues
+2. Run `cargo fmt` and `cargo clippy`
+3. Update documentation if needed
+4. Add a clear description of changes
+5. Reference any related issues
 
 ## License
 

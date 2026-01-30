@@ -202,7 +202,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
     {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return 0;
         }
     };
@@ -217,7 +217,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
     {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return 0;
         }
     };
@@ -241,7 +241,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
             Box::into_raw(handle) as jlong
         }
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             0
         }
     }
@@ -288,7 +288,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
     let key_bytes = match env.convert_byte_array(&key) {
         Ok(b) => Bytes::from(b),
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return std::ptr::null_mut();
         }
     };
@@ -300,7 +300,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
     let value_bytes = match copy_value_with_timestamp(&mut env, &value, timestamp_ms) {
         Ok(b) => b,
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return std::ptr::null_mut();
         }
     };
@@ -321,13 +321,13 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
             match create_append_result(&mut env, &append_result, timestamp_ms) {
                 Ok(obj) => obj.into_raw(),
                 Err(e) => {
-                    let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+                    let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
                     std::ptr::null_mut()
                 }
             }
         }
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             std::ptr::null_mut()
         }
     }
@@ -387,7 +387,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeClose<'local>(
         let result = runtime_handle.block_on(async { log.close().await });
 
         if let Err(e) = result {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
         }
 
         // Shutdown the runtimes
@@ -473,7 +473,7 @@ pub extern "system" fn Java_dev_opendata_LogReader_nativeRead<'local>(
     let key_bytes = match env.convert_byte_array(&key) {
         Ok(b) => Bytes::from(b),
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return std::ptr::null_mut();
         }
     };
@@ -499,12 +499,12 @@ pub extern "system" fn Java_dev_opendata_LogReader_nativeRead<'local>(
         Ok(entries) => match create_log_entry_array(&mut env, &entries) {
             Ok(arr) => arr,
             Err(e) => {
-                let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
                 std::ptr::null_mut()
             }
         },
         Err(e) => {
-            let _ = env.throw_new("dev/opendata/OpenDataNativeException", e.to_string());
+            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             std::ptr::null_mut()
         }
     }

@@ -10,12 +10,16 @@ This project provides Java bindings for OpenData components via JNI, enabling us
 
 | Module | Maven Coordinates | Description |
 |--------|-------------------|-------------|
+| `common` | `dev.opendata:common` | Common utilities and exceptions |
 | `log` | `dev.opendata:log` | Java bindings for OpenData Log |
 
 ## Project Structure
 
 ```
 opendata-java/
+├── common/
+│   └── src/main/java/dev/opendata/common/
+│       └── OpenDataNativeException.java
 ├── log/
 │   ├── native/                    # Rust JNI implementation
 │   │   ├── Cargo.toml
@@ -25,8 +29,7 @@ opendata-java/
 │       ├── LogReader.java         # Read interface
 │       ├── LogEntry.java          # Entry record
 │       ├── AppendResult.java      # Append result record
-│       ├── StorageType.java       # Storage backend enum
-│       └── OpenDataNativeException.java
+│       └── StorageType.java       # Storage backend enum
 └── pom.xml
 ```
 

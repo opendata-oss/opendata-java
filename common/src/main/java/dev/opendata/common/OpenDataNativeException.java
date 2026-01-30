@@ -1,4 +1,4 @@
-package dev.opendata;
+package dev.opendata.common;
 
 /**
  * Exception thrown by the native OpenData library.

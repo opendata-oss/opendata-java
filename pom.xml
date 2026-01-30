@@ -13,6 +13,7 @@
     <description>Java bindings for OpenData systems</description>
 
     <modules>
+        <module>common</module>
         <module>log</module>
     </modules>
 

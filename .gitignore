@@ -1,0 +1,30 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Rust build artifacts
+target/
+
+# Java build artifacts
+*.class
+*.jar
+*.war
+*.ear
+log-jni/java/target/
+benchmark-driver/target/
+
+# Benchmark results
+*.json
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*~

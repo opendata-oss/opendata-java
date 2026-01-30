@@ -1,0 +1,21 @@
+# Simple 1 producer, 1 consumer workload
+# Phase 1 baseline for OpenData Log benchmarking
+
+name: simple-1p-1c
+
+topics: 1
+partitionsPerTopic: 1  # Maps to 1 Log key
+messageSize: 1024      # 1 KiB messages
+payloadFile: ""
+subscriptionsPerTopic: 1
+consumerPerSubscription: 1
+producersPerTopic: 1
+
+producerRate: 10000    # 10K msg/s initial target
+
+consumerBacklogSizeGB: 0
+warmupDurationMinutes: 1
+testDurationMinutes: 5
+
+# Payload configuration
+randomBytesRatio: 0.5  # Match WarpStream's realistic compression ratio

@@ -1,0 +1,21 @@
+# Throughput benchmark - 1 producer, 1 consumer
+#
+# Phase 1 benchmark: Single producer, single consumer throughput test.
+# Use with driver-config/opendata-throughput.yaml for maximum throughput.
+
+name: OpenData Throughput (1P/1C)
+
+topics: 1
+partitionsPerTopic: 4
+keyDistributor: "ROUND_ROBIN"
+messageSize: 1024
+useRandomizedPayloads: true
+randomBytesRatio: 0.5
+randomizedPayloadPoolSize: 100
+subscriptionsPerTopic: 1
+consumerPerSubscription: 1
+producersPerTopic: 1
+producerRate: 100000
+consumerBacklogSizeGB: 0
+warmupDurationMinutes: 1
+testDurationMinutes: 5

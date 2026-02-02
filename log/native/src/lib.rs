@@ -15,7 +15,7 @@
 //! └─────────────────────┴──────────────────────┘
 //! ```
 //!
-//! - On `append`: current wall-clock time is prepended to the value
+//! - On `append`: timestamp from Java Record is prepended to the value (captured at submission time)
 //! - On `read`: timestamp is extracted from the header and returned separately
 //!
 //! This is transparent to the Java caller and will be removed once upstream
@@ -57,22 +57,13 @@
 //! overhead should be relatively smaller for larger payloads and batch sizes.
 
 use bytes::Bytes;
-use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jlong, jobject, jobjectArray};
 use jni::JNIEnv;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::{Handle, Runtime};
 
 /// Size of the timestamp header prepended to values.
 const TIMESTAMP_HEADER_SIZE: usize = 8;
-
-/// Returns current wall-clock time as milliseconds since Unix epoch.
-fn current_timestamp_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before Unix epoch")
-        .as_millis() as i64
-}
 
 // Re-export log crate types with explicit naming to avoid confusion with std log
 use common::storage::config::{
@@ -255,17 +246,17 @@ fn get_optional_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> 
     env.get_string(s).ok().map(|s| s.into())
 }
 
-/// Appends a record to the log with a timestamp header.
+/// Appends a batch of records to the log with timestamp headers.
 ///
-/// The value is stored as: `[8-byte timestamp (big-endian i64)] + [original payload]`
+/// Each value is stored as: `[8-byte timestamp (big-endian i64)] + [original payload]`
+/// The timestamp is read from each Java Record object (captured at submission time).
 ///
 /// # Arguments
 /// * `handle` - Native Log pointer
-/// * `key` - Record key as byte array
-/// * `value` - Record value as byte array (timestamp will be prepended)
+/// * `records` - Array of Java Record objects (each with key, value, timestampMs)
 ///
 /// # Returns
-/// AppendResult jobject with start_sequence and timestamp
+/// AppendResult jobject with start_sequence and timestamp of first record
 ///
 /// # Safety
 /// JNI function - handle must be a valid pointer returned by nativeCreate.
@@ -274,8 +265,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
-    key: JByteArray<'local>,
-    value: JByteArray<'local>,
+    records: jobjectArray,
 ) -> jobject {
     if handle == 0 {
         let _ = env.throw_new("java/lang/NullPointerException", "Log handle is null");
@@ -284,41 +274,97 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
 
     let log_handle = unsafe { &*(handle as *const LogHandle) };
 
-    // Convert key: Java byte[] → Rust Bytes (one copy)
-    let key_bytes = match env.convert_byte_array(&key) {
-        Ok(b) => Bytes::from(b),
+    // Convert Java Record[] to Rust Vec<Record>
+    let records_array = unsafe { JObjectArray::from_raw(records) };
+    let len = match env.get_array_length(&records_array) {
+        Ok(l) => l as usize,
         Err(e) => {
             let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
             return std::ptr::null_mut();
         }
     };
 
-    // Get timestamp before copying value (closer to actual append time)
-    let timestamp_ms = current_timestamp_ms();
+    if len == 0 {
+        let _ = env.throw_new("java/lang/IllegalArgumentException", "Records array is empty");
+        return std::ptr::null_mut();
+    }
 
-    // Convert value with timestamp header: single copy directly into final buffer
-    let value_bytes = match copy_value_with_timestamp(&mut env, &value, timestamp_ms) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-            return std::ptr::null_mut();
+    let mut rust_records = Vec::with_capacity(len);
+    let mut first_timestamp_ms: i64 = 0;
+
+    for i in 0..len {
+        let record_obj = match env.get_object_array_element(&records_array, i as i32) {
+            Ok(obj) => obj,
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Extract key byte[] from Record
+        let key_obj = match env.call_method(&record_obj, "key", "()[B", &[]) {
+            Ok(v) => v.l().unwrap(),
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+        let key_array: JByteArray = key_obj.into();
+        let key_bytes = match env.convert_byte_array(&key_array) {
+            Ok(b) => Bytes::from(b),
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Extract value byte[] from Record
+        let value_obj = match env.call_method(&record_obj, "value", "()[B", &[]) {
+            Ok(v) => v.l().unwrap(),
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+        let value_array: JByteArray = value_obj.into();
+
+        // Extract timestampMs from Record
+        let timestamp_ms = match env.call_method(&record_obj, "timestampMs", "()J", &[]) {
+            Ok(v) => v.j().unwrap(),
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        if i == 0 {
+            first_timestamp_ms = timestamp_ms;
         }
-    };
 
-    let record = Record {
-        key: key_bytes,
-        value: value_bytes,
-    };
+        // Convert value with timestamp header
+        let value_bytes = match copy_value_with_timestamp(&mut env, &value_array, timestamp_ms) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        rust_records.push(Record {
+            key: key_bytes,
+            value: value_bytes,
+        });
+    }
 
     // Use block_on with separate compaction runtime to avoid deadlocks
     let result = log_handle
         .runtime_handle
-        .block_on(async { log_handle.log.append(vec![record]).await });
+        .block_on(async { log_handle.log.append(rust_records).await });
 
     match result {
         Ok(append_result) => {
-            // Create Java AppendResult object with actual timestamp
-            match create_append_result(&mut env, &append_result, timestamp_ms) {
+            // Create Java AppendResult object with first record's timestamp
+            match create_append_result(&mut env, &append_result, first_timestamp_ms) {
                 Ok(obj) => obj.into_raw(),
                 Err(e) => {
                     let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
@@ -605,6 +651,16 @@ fn extract_timestamp_and_payload(value: &[u8]) -> (i64, &[u8]) {
     let payload = &value[TIMESTAMP_HEADER_SIZE..];
 
     (timestamp_ms, payload)
+}
+
+/// Returns current wall-clock time as milliseconds since Unix epoch (for testing).
+#[cfg(test)]
+fn current_timestamp_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before Unix epoch")
+        .as_millis() as i64
 }
 
 /// Creates a value with timestamp header prepended (for testing).

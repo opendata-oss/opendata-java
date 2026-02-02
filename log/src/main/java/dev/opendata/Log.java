@@ -1,12 +1,13 @@
 package dev.opendata;
 
 import java.io.Closeable;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Java binding for the OpenData Log trait.
  *
  * <p>Provides append-only log operations backed by a native Rust implementation.
+ * This is a thin wrapper over the native layer - callers are responsible for
+ * batching and backpressure.
  */
 public class Log implements Closeable {
 
@@ -34,11 +35,11 @@ public class Log implements Closeable {
     /**
      * Opens a Log instance with the specified storage configuration.
      *
-     * @param storageType   storage backend type
-     * @param path          data path for SlateDB (ignored for in-memory)
-     * @param objectStore   object store type: "in-memory", "local", or "s3"
-     * @param s3Bucket      S3 bucket name (only for s3 object store)
-     * @param s3Region      S3 region (only for s3 object store)
+     * @param storageType storage backend type
+     * @param path        data path for SlateDB (ignored for in-memory)
+     * @param objectStore object store type: "in-memory", "local", or "s3"
+     * @param s3Bucket    S3 bucket name (only for s3 object store)
+     * @param s3Region    S3 region (only for s3 object store)
      * @return a new Log instance
      */
     public static Log open(StorageType storageType, String path,
@@ -49,12 +50,12 @@ public class Log implements Closeable {
     /**
      * Opens a Log instance with the specified storage configuration.
      *
-     * @param storageType   storage backend type
-     * @param path          data path for SlateDB (ignored for in-memory)
-     * @param objectStore   object store type: "in-memory", "local", or "s3"
-     * @param s3Bucket      S3 bucket name (only for s3 object store)
-     * @param s3Region      S3 region (only for s3 object store)
-     * @param settingsPath  path to SlateDB settings file (optional)
+     * @param storageType  storage backend type
+     * @param path         data path for SlateDB (ignored for in-memory)
+     * @param objectStore  object store type: "in-memory", "local", or "s3"
+     * @param s3Bucket     S3 bucket name (only for s3 object store)
+     * @param s3Region     S3 region (only for s3 object store)
+     * @param settingsPath path to SlateDB settings file (optional)
      * @return a new Log instance
      */
     public static Log open(StorageType storageType, String path,
@@ -74,37 +75,35 @@ public class Log implements Closeable {
     }
 
     /**
-     * Appends a value to the log under the given key.
+     * Appends a batch of records to the log.
      *
-     * <p>The native layer prepends a timestamp header to the value for latency
-     * measurement. This is transparent to the caller.
+     * <p>This is a blocking call that returns when all records have been persisted.
+     * For better throughput, batch multiple records into a single call.
      *
-     * @param key   the key to append under
-     * @param value the value to append
-     * @return the result of the append operation, including the timestamp
+     * @param records the records to append
+     * @return the result of the append operation (sequence of first record)
      */
-    public AppendResult append(byte[] key, byte[] value) {
+    public AppendResult append(Record[] records) {
         checkNotClosed();
-        return nativeAppend(handle, key, value);
+        return nativeAppend(handle, records);
     }
 
     /**
-     * Asynchronously appends a value to the log.
+     * Appends a single record to the log.
+     *
+     * <p>Convenience method for single-record appends. For better throughput,
+     * prefer {@link #append(Record[])} with batched records.
      *
      * @param key   the key to append under
      * @param value the value to append
-     * @return a future that completes with the append result
+     * @return the result of the append operation
      */
-    public CompletableFuture<AppendResult> appendAsync(byte[] key, byte[] value) {
-        // TODO: Implement async append
-        return CompletableFuture.supplyAsync(() -> append(key, value));
+    public AppendResult append(byte[] key, byte[] value) {
+        return append(new Record[]{new Record(key, value)});
     }
 
     /**
      * Creates a reader for this log.
-     *
-     * <p>The reader can be used to read from any key. The key and sequence
-     * are specified per-read operation, not at reader creation time.
      *
      * @return a new LogReader instance
      */
@@ -139,6 +138,8 @@ public class Log implements Closeable {
             String s3Bucket,
             String s3Region,
             String settingsPath);
-    private static native AppendResult nativeAppend(long handle, byte[] key, byte[] value);
+
+    private static native AppendResult nativeAppend(long handle, Record[] records);
+
     private static native void nativeClose(long handle);
 }

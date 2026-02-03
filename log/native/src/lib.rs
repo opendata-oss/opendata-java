@@ -1,11 +1,11 @@
-//! JNI bindings for OpenData Log.
+//! JNI bindings for OpenData LogDb.
 //!
-//! This crate provides Java Native Interface bindings to the OpenData Log,
+//! This crate provides Java Native Interface bindings to the OpenData LogDb,
 //! enabling use from the OpenMessaging Benchmark framework.
 //!
 //! # Timestamp Header
 //!
-//! The upstream Log API does not yet support timestamps. To enable OMB latency
+//! The upstream LogDb API does not yet support timestamps. To enable OMB latency
 //! measurement, this layer prepends an 8-byte timestamp header to each value:
 //!
 //! ```text
@@ -24,7 +24,7 @@
 //! # Benchmark Overhead
 //!
 //! These bindings introduce overhead compared to native Rust usage. When
-//! interpreting OMB results, consider the following costs:
+//! interpreting benchmark results, consider the following costs:
 //!
 //! ## Data Copies
 //!
@@ -39,7 +39,7 @@
 //!
 //! ## Async Runtime
 //!
-//! The Log API is async, but JNI calls are synchronous. We maintain a global
+//! The LogDb API is async, but JNI calls are synchronous. We maintain a global
 //! Tokio runtime and use `block_on()` for each operation. This adds:
 //! - Thread context switching overhead
 //! - Potential contention on the runtime's task scheduler
@@ -70,29 +70,30 @@ use common::storage::config::{
     AwsObjectStoreConfig, LocalObjectStoreConfig, ObjectStoreConfig, SlateDbStorageConfig,
     StorageConfig,
 };
-use log::{AppendResult, Config, Log, LogBuilder, LogEntry, LogRead, Record};
+use common::StorageRuntime;
+use log::{AppendResult, Config, LogDb, LogDbBuilder, LogEntry, LogRead, Record};
 
-/// Handle to a Log instance with its associated Tokio runtime.
+/// Handle to a LogDb instance with its associated Tokio runtime.
 ///
 /// Uses block_on for JNI operations. A separate compaction runtime is used for
 /// SlateDB's compaction/GC tasks to prevent deadlock when the main runtime's
 /// threads are blocked in JNI calls.
 struct LogHandle {
-    /// The Log instance
-    log: Log,
+    /// The LogDb instance
+    log: LogDb,
     /// Handle to the runtime for async operations
     runtime_handle: Handle,
-    /// The main runtime (kept alive for the lifetime of the Log)
+    /// The main runtime (kept alive for the lifetime of the LogDb)
     runtime: Option<Runtime>,
     /// Separate runtime for SlateDB compaction/GC tasks
     compaction_runtime: Option<Runtime>,
 }
 
 // =============================================================================
-// Log JNI Methods
+// LogDb JNI Methods
 // =============================================================================
 
-/// Creates a new Log instance with the specified storage configuration.
+/// Creates a new LogDb instance with the specified storage configuration.
 ///
 /// # Arguments
 /// * `storage_type` - "IN_MEMORY" or "SLATEDB"
@@ -103,9 +104,9 @@ struct LogHandle {
 /// * `settings_path` - Path to SlateDB settings file (nullable)
 ///
 /// # Safety
-/// JNI function - must be called from Java with valid JNIEnv.
+/// This is a JNI function - must be called from Java with valid JNIEnv.
 #[no_mangle]
-pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
+pub extern "system" fn Java_dev_opendata_LogDb_nativeCreate<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     storage_type: JString<'local>,
@@ -185,7 +186,7 @@ pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
         ..Config::default()
     };
 
-    // Create a dedicated runtime for this Log instance (for user operations)
+    // Create a dedicated runtime for this LogDb instance (for user operations)
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("opendata-log")
@@ -213,10 +214,12 @@ pub extern "system" fn Java_dev_opendata_Log_nativeCreate<'local>(
         }
     };
 
-    // Open the Log using LogBuilder with separate compaction runtime
+    // Open the LogDb using LogDbBuilder with separate compaction runtime
     let result = runtime.block_on(async {
-        LogBuilder::new(config)
-            .with_compaction_runtime(compaction_runtime.handle().clone())
+        let storage_runtime =
+            StorageRuntime::new().with_compaction_runtime(compaction_runtime.handle().clone());
+        LogDbBuilder::new(config)
+            .with_storage_runtime(storage_runtime)
             .build()
             .await
     });
@@ -252,7 +255,7 @@ fn get_optional_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> 
 /// The timestamp is read from each Java Record object (captured at submission time).
 ///
 /// # Arguments
-/// * `handle` - Native Log pointer
+/// * `handle` - Native LogDb pointer
 /// * `records` - Array of Java Record objects (each with key, value, timestampMs)
 ///
 /// # Returns
@@ -261,14 +264,15 @@ fn get_optional_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> 
 /// # Safety
 /// JNI function - handle must be a valid pointer returned by nativeCreate.
 #[no_mangle]
-pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
     records: jobjectArray,
 ) -> jobject {
     if handle == 0 {
-        let _ = env.throw_new("java/lang/NullPointerException", "Log handle is null");
+        let _ = env.throw_new("java/lang/NullPointerException", "LogDb handle is null");
         return std::ptr::null_mut();
     }
 
@@ -285,7 +289,10 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
     };
 
     if len == 0 {
-        let _ = env.throw_new("java/lang/IllegalArgumentException", "Records array is empty");
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            "Records array is empty",
+        );
         return std::ptr::null_mut();
     }
 
@@ -367,7 +374,8 @@ pub extern "system" fn Java_dev_opendata_Log_nativeAppend<'local>(
             match create_append_result(&mut env, &append_result, first_timestamp_ms) {
                 Ok(obj) => obj.into_raw(),
                 Err(e) => {
-                    let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                    let _ =
+                        env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
                     std::ptr::null_mut()
                 }
             }
@@ -408,12 +416,12 @@ fn copy_value_with_timestamp(
     Ok(Bytes::from(buffer))
 }
 
-/// Closes and frees a Log instance and its associated runtime.
+/// Closes and frees a LogDb instance and its associated runtime.
 ///
 /// # Safety
 /// JNI function - handle must be a valid pointer returned by nativeCreate.
 #[no_mangle]
-pub extern "system" fn Java_dev_opendata_Log_nativeClose<'local>(
+pub extern "system" fn Java_dev_opendata_LogDb_nativeClose<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -452,8 +460,8 @@ pub extern "system" fn Java_dev_opendata_Log_nativeClose<'local>(
 
 /// Holds state for a Java LogReader: a reference back to the parent LogHandle.
 ///
-/// Since `Log` implements `LogRead`, we use the parent Log for reading operations
-/// rather than creating a separate `LogReader` instance (which would have its own
+/// Since `LogDb` implements `LogRead`, we use the parent LogDb for reading operations
+/// rather than creating a separate `LogDbReader` instance (which would have its own
 /// isolated storage).
 struct ReaderState {
     /// Handle to the parent LogHandle (borrowed, not owned - LogHandle outlives readers)
@@ -462,7 +470,7 @@ struct ReaderState {
 
 /// Creates a new LogReader instance.
 ///
-/// The reader shares storage with the parent Log by keeping a reference to it.
+/// The reader shares storage with the parent LogDb by keeping a reference to it.
 /// Key and sequence are specified per-read operation.
 ///
 /// # Safety
@@ -474,18 +482,18 @@ pub extern "system" fn Java_dev_opendata_LogReader_nativeCreate<'local>(
     log_handle_ptr: jlong,
 ) -> jlong {
     if log_handle_ptr == 0 {
-        let _ = env.throw_new("java/lang/NullPointerException", "Log handle is null");
+        let _ = env.throw_new("java/lang/NullPointerException", "LogDb handle is null");
         return 0;
     }
 
-    // Store the LogHandle pointer - we'll use it to access the Log and its runtime
+    // Store the LogHandle pointer - we'll use it to access the LogDb and its runtime
     let state = ReaderState { log_handle_ptr };
     Box::into_raw(Box::new(state)) as jlong
 }
 
 /// Reads entries from the log for a given key.
 ///
-/// Uses the parent Log (which implements LogRead) to scan entries.
+/// Uses the parent LogDb (which implements LogRead) to scan entries.
 ///
 /// # Safety
 /// JNI function - handle must be a valid pointer returned by nativeCreate.
@@ -509,7 +517,7 @@ pub extern "system" fn Java_dev_opendata_LogReader_nativeRead<'local>(
     if state.log_handle_ptr == 0 {
         let _ = env.throw_new(
             "java/lang/IllegalStateException",
-            "Parent Log handle is null",
+            "Parent LogDb handle is null",
         );
         return std::ptr::null_mut();
     }
@@ -527,7 +535,7 @@ pub extern "system" fn Java_dev_opendata_LogReader_nativeRead<'local>(
     let max = max_entries as usize;
     let start_seq = start_sequence as u64;
 
-    // Scan entries using the parent Log (which implements LogRead)
+    // Scan entries using the parent LogDb (which implements LogRead)
     // Use block_on with separate compaction runtime to avoid deadlocks
     let entries_result = log_handle.runtime_handle.block_on(async {
         let mut iter = log_handle.log.scan(key_bytes, start_seq..).await?;

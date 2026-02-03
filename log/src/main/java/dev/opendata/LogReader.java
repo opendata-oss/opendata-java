@@ -4,10 +4,10 @@ import java.io.Closeable;
 import java.util.List;
 
 /**
- * Java binding for reading from an OpenData Log.
+ * Java binding for reading from an OpenData LogDb.
  *
  * <p>Provides sequential read access to log entries for a given key.
- * This is a thin wrapper over the native Rust LogReader.
+ * This is a thin wrapper over the native Rust LogDbReader.
  */
 public class LogReader implements Closeable {
 
@@ -21,7 +21,7 @@ public class LogReader implements Closeable {
     /**
      * Creates a new LogReader for the given log.
      *
-     * @param logHandle the native handle of the parent Log
+     * @param logHandle the native handle of the parent LogDb
      * @return a new LogReader instance
      */
     static LogReader create(long logHandle) {

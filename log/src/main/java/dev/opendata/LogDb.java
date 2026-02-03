@@ -3,13 +3,13 @@ package dev.opendata;
 import java.io.Closeable;
 
 /**
- * Java binding for the OpenData Log trait.
+ * Java binding for the OpenData LogDb trait.
  *
  * <p>Provides append-only log operations backed by a native Rust implementation.
  * This is a thin wrapper over the native layer - callers are responsible for
  * batching and backpressure.
  */
-public class Log implements Closeable {
+public class LogDb implements Closeable {
 
     static {
         System.loadLibrary("opendata_log_jni");
@@ -18,37 +18,37 @@ public class Log implements Closeable {
     private final long handle;
     private volatile boolean closed = false;
 
-    private Log(long handle) {
+    private LogDb(long handle) {
         this.handle = handle;
     }
 
     /**
-     * Opens a Log instance with in-memory storage (for testing).
+     * Opens a LogDb instance with in-memory storage (for testing).
      *
      * @param configPath unused, kept for backward compatibility
-     * @return a new Log instance
+     * @return a new LogDb instance
      */
-    public static Log open(String configPath) {
+    public static LogDb open(String configPath) {
         return open(StorageType.IN_MEMORY, null, null, null, null, null);
     }
 
     /**
-     * Opens a Log instance with the specified storage configuration.
+     * Opens a LogDb instance with the specified storage configuration.
      *
      * @param storageType storage backend type
      * @param path        data path for SlateDB (ignored for in-memory)
      * @param objectStore object store type: "in-memory", "local", or "s3"
      * @param s3Bucket    S3 bucket name (only for s3 object store)
      * @param s3Region    S3 region (only for s3 object store)
-     * @return a new Log instance
+     * @return a new LogDb instance
      */
-    public static Log open(StorageType storageType, String path,
+    public static LogDb open(StorageType storageType, String path,
                            String objectStore, String s3Bucket, String s3Region) {
         return open(storageType, path, objectStore, s3Bucket, s3Region, null);
     }
 
     /**
-     * Opens a Log instance with the specified storage configuration.
+     * Opens a LogDb instance with the specified storage configuration.
      *
      * @param storageType  storage backend type
      * @param path         data path for SlateDB (ignored for in-memory)
@@ -56,9 +56,9 @@ public class Log implements Closeable {
      * @param s3Bucket     S3 bucket name (only for s3 object store)
      * @param s3Region     S3 region (only for s3 object store)
      * @param settingsPath path to SlateDB settings file (optional)
-     * @return a new Log instance
+     * @return a new LogDb instance
      */
-    public static Log open(StorageType storageType, String path,
+    public static LogDb open(StorageType storageType, String path,
                            String objectStore, String s3Bucket, String s3Region,
                            String settingsPath) {
         long handle = nativeCreate(
@@ -69,9 +69,9 @@ public class Log implements Closeable {
                 s3Region,
                 settingsPath);
         if (handle == 0) {
-            throw new RuntimeException("Failed to create Log instance");
+            throw new RuntimeException("Failed to create LogDb instance");
         }
-        return new Log(handle);
+        return new LogDb(handle);
     }
 
     /**
@@ -122,7 +122,7 @@ public class Log implements Closeable {
 
     private void checkNotClosed() {
         if (closed) {
-            throw new IllegalStateException("Log is closed");
+            throw new IllegalStateException("LogDb is closed");
         }
     }
 

@@ -23,55 +23,29 @@ public class LogDb implements Closeable {
     }
 
     /**
-     * Opens a LogDb instance with in-memory storage (for testing).
+     * Opens a LogDb instance with the specified configuration.
      *
-     * @param configPath unused, kept for backward compatibility
+     * @param config the log configuration
      * @return a new LogDb instance
      */
-    public static LogDb open(String configPath) {
-        return open(StorageType.IN_MEMORY, null, null, null, null, null);
-    }
-
-    /**
-     * Opens a LogDb instance with the specified storage configuration.
-     *
-     * @param storageType storage backend type
-     * @param path        data path for SlateDB (ignored for in-memory)
-     * @param objectStore object store type: "in-memory", "local", or "s3"
-     * @param s3Bucket    S3 bucket name (only for s3 object store)
-     * @param s3Region    S3 region (only for s3 object store)
-     * @return a new LogDb instance
-     */
-    public static LogDb open(StorageType storageType, String path,
-                           String objectStore, String s3Bucket, String s3Region) {
-        return open(storageType, path, objectStore, s3Bucket, s3Region, null);
-    }
-
-    /**
-     * Opens a LogDb instance with the specified storage configuration.
-     *
-     * @param storageType  storage backend type
-     * @param path         data path for SlateDB (ignored for in-memory)
-     * @param objectStore  object store type: "in-memory", "local", or "s3"
-     * @param s3Bucket     S3 bucket name (only for s3 object store)
-     * @param s3Region     S3 region (only for s3 object store)
-     * @param settingsPath path to SlateDB settings file (optional)
-     * @return a new LogDb instance
-     */
-    public static LogDb open(StorageType storageType, String path,
-                           String objectStore, String s3Bucket, String s3Region,
-                           String settingsPath) {
-        long handle = nativeCreate(
-                storageType.name(),
-                path != null ? path : "/tmp/opendata",
-                objectStore != null ? objectStore : "local",
-                s3Bucket,
-                s3Region,
-                settingsPath);
+    public static LogDb open(LogDbConfig config) {
+        if (config == null) {
+            throw new IllegalArgumentException("config must not be null");
+        }
+        long handle = nativeCreate(config);
         if (handle == 0) {
             throw new RuntimeException("Failed to create LogDb instance");
         }
         return new LogDb(handle);
+    }
+
+    /**
+     * Opens a LogDb instance with in-memory storage (for testing).
+     *
+     * @return a new LogDb instance
+     */
+    public static LogDb openInMemory() {
+        return open(LogDbConfig.inMemory());
     }
 
     /**
@@ -131,13 +105,7 @@ public class LogDb implements Closeable {
     }
 
     // Native methods
-    private static native long nativeCreate(
-            String storageType,
-            String path,
-            String objectStore,
-            String s3Bucket,
-            String s3Region,
-            String settingsPath);
+    private static native long nativeCreate(LogDbConfig config);
 
     private static native AppendResult nativeAppend(long handle, Record[] records);
 

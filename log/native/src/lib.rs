@@ -57,7 +57,7 @@
 //! overhead should be relatively smaller for larger payloads and batch sizes.
 
 use bytes::Bytes;
-use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JValue};
 use jni::sys::{jlong, jobject, jobjectArray};
 use jni::JNIEnv;
 use tokio::runtime::{Handle, Runtime};
@@ -93,15 +93,10 @@ struct LogHandle {
 // LogDb JNI Methods
 // =============================================================================
 
-/// Creates a new LogDb instance with the specified storage configuration.
+/// Creates a new LogDb instance with the specified configuration.
 ///
 /// # Arguments
-/// * `storage_type` - "IN_MEMORY" or "SLATEDB"
-/// * `path` - Data path for SlateDB storage
-/// * `object_store` - "in-memory", "local", or "s3"
-/// * `s3_bucket` - S3 bucket name (nullable)
-/// * `s3_region` - S3 region (nullable)
-/// * `settings_path` - Path to SlateDB settings file (nullable)
+/// * `config` - Java LogDbConfig object
 ///
 /// # Safety
 /// This is a JNI function - must be called from Java with valid JNIEnv.
@@ -109,74 +104,13 @@ struct LogHandle {
 pub extern "system" fn Java_dev_opendata_LogDb_nativeCreate<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
-    storage_type: JString<'local>,
-    path: JString<'local>,
-    object_store: JString<'local>,
-    s3_bucket: JString<'local>,
-    s3_region: JString<'local>,
-    settings_path: JString<'local>,
+    config: JObject<'local>,
 ) -> jlong {
-    // Parse storage type
-    let storage_type_str: String = match env.get_string(&storage_type) {
-        Ok(s) => s.into(),
+    // Extract storage config from LogDbConfig
+    let storage_config = match extract_storage_config(&mut env, &config) {
+        Ok(c) => c,
         Err(e) => {
-            let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
-            return 0;
-        }
-    };
-
-    // Build storage config based on type
-    let storage_config = match storage_type_str.as_str() {
-        "IN_MEMORY" => StorageConfig::InMemory,
-        "SLATEDB" => {
-            let path_str: String = match env.get_string(&path) {
-                Ok(s) => s.into(),
-                Err(e) => {
-                    let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
-                    return 0;
-                }
-            };
-
-            let object_store_str: String = match env.get_string(&object_store) {
-                Ok(s) => s.into(),
-                Err(e) => {
-                    let _ = env.throw_new("java/lang/IllegalArgumentException", e.to_string());
-                    return 0;
-                }
-            };
-
-            let object_store_config = match object_store_str.as_str() {
-                "in-memory" => ObjectStoreConfig::InMemory,
-                "local" => ObjectStoreConfig::Local(LocalObjectStoreConfig {
-                    path: path_str.clone(),
-                }),
-                "s3" => {
-                    let bucket = get_optional_string(&mut env, &s3_bucket).unwrap_or_default();
-                    let region = get_optional_string(&mut env, &s3_region).unwrap_or_default();
-                    ObjectStoreConfig::Aws(AwsObjectStoreConfig { bucket, region })
-                }
-                _ => {
-                    let _ = env.throw_new(
-                        "java/lang/IllegalArgumentException",
-                        format!("Unknown object store type: {}", object_store_str),
-                    );
-                    return 0;
-                }
-            };
-
-            let settings = get_optional_string(&mut env, &settings_path);
-
-            StorageConfig::SlateDb(SlateDbStorageConfig {
-                path: path_str,
-                object_store: object_store_config,
-                settings_path: settings,
-            })
-        }
-        _ => {
-            let _ = env.throw_new(
-                "java/lang/IllegalArgumentException",
-                format!("Unknown storage type: {}", storage_type_str),
-            );
+            let _ = env.throw_new("java/lang/IllegalArgumentException", e);
             return 0;
         }
     };
@@ -241,12 +175,173 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeCreate<'local>(
     }
 }
 
-/// Helper to get an optional string from a potentially null JString.
-fn get_optional_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
-    if s.is_null() {
-        return None;
+// =============================================================================
+// Config Extraction Helpers
+// =============================================================================
+
+/// Extracts StorageConfig from a Java LogDbConfig object.
+fn extract_storage_config(
+    env: &mut JNIEnv<'_>,
+    config: &JObject<'_>,
+) -> Result<StorageConfig, String> {
+    // Get the storage field from LogDbConfig
+    let storage_obj = env
+        .call_method(
+            config,
+            "storage",
+            "()Ldev/opendata/common/StorageConfig;",
+            &[],
+        )
+        .map_err(|e| format!("Failed to get storage: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get storage object: {}", e))?;
+
+    // Check which type of StorageConfig it is using instanceof
+    let in_memory_class = env
+        .find_class("dev/opendata/common/StorageConfig$InMemory")
+        .map_err(|e| format!("Failed to find InMemory class: {}", e))?;
+
+    let slatedb_class = env
+        .find_class("dev/opendata/common/StorageConfig$SlateDb")
+        .map_err(|e| format!("Failed to find SlateDb class: {}", e))?;
+
+    if env
+        .is_instance_of(&storage_obj, &in_memory_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        Ok(StorageConfig::InMemory)
+    } else if env
+        .is_instance_of(&storage_obj, &slatedb_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        extract_slatedb_config(env, &storage_obj)
+    } else {
+        Err("Unknown StorageConfig type".to_string())
     }
-    env.get_string(s).ok().map(|s| s.into())
+}
+
+/// Extracts SlateDbStorageConfig from a Java StorageConfig.SlateDb record.
+fn extract_slatedb_config(
+    env: &mut JNIEnv<'_>,
+    slatedb_obj: &JObject<'_>,
+) -> Result<StorageConfig, String> {
+    // Get path field
+    let path_obj = env
+        .call_method(slatedb_obj, "path", "()Ljava/lang/String;", &[])
+        .map_err(|e| format!("Failed to get path: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get path object: {}", e))?;
+    let path: String = env
+        .get_string((&path_obj).into())
+        .map_err(|e| format!("Failed to convert path: {}", e))?
+        .into();
+
+    // Get objectStore field
+    let object_store_obj = env
+        .call_method(
+            slatedb_obj,
+            "objectStore",
+            "()Ldev/opendata/common/ObjectStoreConfig;",
+            &[],
+        )
+        .map_err(|e| format!("Failed to get objectStore: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get objectStore object: {}", e))?;
+    let object_store = extract_object_store_config(env, &object_store_obj)?;
+
+    // Get settingsPath field (nullable)
+    let settings_path_obj = env
+        .call_method(slatedb_obj, "settingsPath", "()Ljava/lang/String;", &[])
+        .map_err(|e| format!("Failed to get settingsPath: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get settingsPath object: {}", e))?;
+    let settings_path = if settings_path_obj.is_null() {
+        None
+    } else {
+        Some(
+            env.get_string((&settings_path_obj).into())
+                .map_err(|e| format!("Failed to convert settingsPath: {}", e))?
+                .into(),
+        )
+    };
+
+    Ok(StorageConfig::SlateDb(SlateDbStorageConfig {
+        path,
+        object_store,
+        settings_path,
+    }))
+}
+
+/// Extracts ObjectStoreConfig from a Java ObjectStoreConfig object.
+fn extract_object_store_config(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+) -> Result<ObjectStoreConfig, String> {
+    let in_memory_class = env
+        .find_class("dev/opendata/common/ObjectStoreConfig$InMemory")
+        .map_err(|e| format!("Failed to find ObjectStoreConfig.InMemory class: {}", e))?;
+
+    let aws_class = env
+        .find_class("dev/opendata/common/ObjectStoreConfig$Aws")
+        .map_err(|e| format!("Failed to find ObjectStoreConfig.Aws class: {}", e))?;
+
+    let local_class = env
+        .find_class("dev/opendata/common/ObjectStoreConfig$Local")
+        .map_err(|e| format!("Failed to find ObjectStoreConfig.Local class: {}", e))?;
+
+    if env
+        .is_instance_of(obj, &in_memory_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        Ok(ObjectStoreConfig::InMemory)
+    } else if env
+        .is_instance_of(obj, &aws_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        // Extract region and bucket from Aws record
+        let region_obj = env
+            .call_method(obj, "region", "()Ljava/lang/String;", &[])
+            .map_err(|e| format!("Failed to get region: {}", e))?
+            .l()
+            .map_err(|e| format!("Failed to get region object: {}", e))?;
+        let region: String = env
+            .get_string((&region_obj).into())
+            .map_err(|e| format!("Failed to convert region: {}", e))?
+            .into();
+
+        let bucket_obj = env
+            .call_method(obj, "bucket", "()Ljava/lang/String;", &[])
+            .map_err(|e| format!("Failed to get bucket: {}", e))?
+            .l()
+            .map_err(|e| format!("Failed to get bucket object: {}", e))?;
+        let bucket: String = env
+            .get_string((&bucket_obj).into())
+            .map_err(|e| format!("Failed to convert bucket: {}", e))?
+            .into();
+
+        Ok(ObjectStoreConfig::Aws(AwsObjectStoreConfig {
+            region,
+            bucket,
+        }))
+    } else if env
+        .is_instance_of(obj, &local_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        // Extract path from Local record
+        let path_obj = env
+            .call_method(obj, "path", "()Ljava/lang/String;", &[])
+            .map_err(|e| format!("Failed to get path: {}", e))?
+            .l()
+            .map_err(|e| format!("Failed to get path object: {}", e))?;
+        let path: String = env
+            .get_string((&path_obj).into())
+            .map_err(|e| format!("Failed to convert path: {}", e))?
+            .into();
+
+        Ok(ObjectStoreConfig::Local(LocalObjectStoreConfig { path }))
+    } else {
+        Err("Unknown ObjectStoreConfig type".to_string())
+    }
 }
 
 /// Appends a batch of records to the log with timestamp headers.

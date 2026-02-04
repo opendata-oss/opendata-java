@@ -232,4 +232,73 @@ class LogDbIntegrationTest {
                     .isLessThanOrEqualTo(afterAppend);
         }
     }
+
+    @Test
+    void shouldReadFromSeparateLogDbReader(@TempDir Path tempDir) {
+        var config = new LogDbConfig(
+                new StorageConfig.SlateDb(
+                        "separate-reader-test",
+                        new ObjectStoreConfig.Local(tempDir.toString())
+                )
+        );
+
+        byte[] key = "e2e-key".getBytes(StandardCharsets.UTF_8);
+
+        // Write with LogDb
+        try (LogDb writer = LogDb.open(config)) {
+            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            writer.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
+            writer.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
+        }
+
+        // Read with separate LogDbReader
+        try (LogDbReader reader = LogDbReader.open(config)) {
+            List<LogEntry> entries = reader.scan(key, 0, 10);
+
+            assertThat(entries).hasSize(3);
+            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+            assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
+            assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
+            assertThat(entries.get(0).sequence()).isEqualTo(0);
+            assertThat(entries.get(1).sequence()).isEqualTo(1);
+            assertThat(entries.get(2).sequence()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void shouldCoexistWriterAndReaderWithoutFencingError(@TempDir Path tempDir) {
+        var config = new LogDbConfig(
+                new StorageConfig.SlateDb(
+                        "concurrent-test",
+                        new ObjectStoreConfig.Local(tempDir.toString())
+                )
+        );
+
+        byte[] key = "concurrent-key".getBytes(StandardCharsets.UTF_8);
+
+        // Open writer and keep it open
+        try (LogDb writer = LogDb.open(config)) {
+            // Write initial data
+            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
+
+            // Open reader while writer is still open - this should NOT cause fencing error
+            try (LogDbReader reader = LogDbReader.open(config)) {
+                // Reader can read the data written by writer
+                List<LogEntry> entries = reader.scan(key, 0, 10);
+                assertThat(entries).hasSize(1);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+
+                // Writer can still write more data while reader is open
+                writer.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
+                writer.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
+            }
+
+            // After reader closes, writer should still work
+            writer.append(key, "value-3".getBytes(StandardCharsets.UTF_8));
+
+            List<LogEntry> finalEntries = writer.scan(key, 0, 10);
+            assertThat(finalEntries).hasSize(4);
+        }
+    }
+
 }

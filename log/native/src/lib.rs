@@ -511,6 +511,33 @@ fn copy_value_with_timestamp(
     Ok(Bytes::from(buffer))
 }
 
+/// Flushes all pending writes to durable storage.
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "system" fn Java_dev_opendata_LogDb_nativeFlush<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if handle == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "LogDb handle is null");
+        return;
+    }
+
+    let log_handle = unsafe { &*(handle as *const LogHandle) };
+
+    let result = log_handle
+        .runtime_handle
+        .block_on(async { log_handle.log.flush().await });
+
+    if let Err(e) = result {
+        let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+    }
+}
+
 /// Closes and frees a LogDb instance and its associated runtime.
 ///
 /// # Safety

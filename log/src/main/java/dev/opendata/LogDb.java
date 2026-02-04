@@ -87,6 +87,18 @@ public class LogDb implements Closeable, LogRead {
         return entries != null ? List.of(entries) : List.of();
     }
 
+    /**
+     * Flushes all pending writes to durable storage.
+     *
+     * <p>This ensures that all writes that have been acknowledged are persisted
+     * to durable storage. For SlateDB-backed storage, this flushes the memtable
+     * to the WAL and object store.
+     */
+    public void flush() {
+        checkNotClosed();
+        nativeFlush(handle);
+    }
+
     @Override
     public void close() {
         if (!closed) {
@@ -109,5 +121,6 @@ public class LogDb implements Closeable, LogRead {
     private static native long nativeCreate(LogDbConfig config);
     private static native AppendResult nativeAppend(long handle, Record[] records);
     private static native LogEntry[] nativeScan(long handle, byte[] key, long startSequence, long maxEntries);
+    private static native void nativeFlush(long handle);
     private static native void nativeClose(long handle);
 }

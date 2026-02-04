@@ -1,6 +1,7 @@
 package dev.opendata;
 
 import java.io.Closeable;
+import java.util.List;
 
 /**
  * Java binding for the OpenData LogDb trait.
@@ -8,8 +9,11 @@ import java.io.Closeable;
  * <p>Provides append-only log operations backed by a native Rust implementation.
  * This is a thin wrapper over the native layer - callers are responsible for
  * batching and backpressure.
+ *
+ * <p>Implements {@link LogRead} for read operations. For read-only access without
+ * write capabilities, use {@link LogDbReader} instead.
  */
-public class LogDb implements Closeable {
+public class LogDb implements Closeable, LogRead {
 
     static {
         System.loadLibrary("opendata_log_jni");
@@ -76,14 +80,11 @@ public class LogDb implements Closeable {
         return append(new Record[]{new Record(key, value)});
     }
 
-    /**
-     * Creates a reader for this log.
-     *
-     * @return a new LogReader instance
-     */
-    public LogReader reader() {
+    @Override
+    public List<LogEntry> scan(byte[] key, long startSequence, int maxEntries) {
         checkNotClosed();
-        return LogReader.create(handle);
+        LogEntry[] entries = nativeScan(handle, key, startSequence, maxEntries);
+        return entries != null ? List.of(entries) : List.of();
     }
 
     @Override
@@ -106,8 +107,7 @@ public class LogDb implements Closeable {
 
     // Native methods
     private static native long nativeCreate(LogDbConfig config);
-
     private static native AppendResult nativeAppend(long handle, Record[] records);
-
+    private static native LogEntry[] nativeScan(long handle, byte[] key, long startSequence, long maxEntries);
     private static native void nativeClose(long handle);
 }

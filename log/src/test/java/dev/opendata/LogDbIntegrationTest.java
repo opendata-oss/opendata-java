@@ -47,13 +47,11 @@ class LogDbIntegrationTest {
 
             assertThat(result.sequence()).isEqualTo(0);
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(1);
-                assertThat(entries.get(0).sequence()).isEqualTo(0);
-                assertThat(entries.get(0).key()).isEqualTo(key);
-                assertThat(entries.get(0).value()).isEqualTo(value);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(1);
+            assertThat(entries.get(0).sequence()).isEqualTo(0);
+            assertThat(entries.get(0).key()).isEqualTo(key);
+            assertThat(entries.get(0).value()).isEqualTo(value);
         }
     }
 
@@ -71,16 +69,14 @@ class LogDbIntegrationTest {
 
             assertThat(result.sequence()).isEqualTo(0);
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(3);
-                assertThat(entries.get(0).sequence()).isEqualTo(0);
-                assertThat(entries.get(1).sequence()).isEqualTo(1);
-                assertThat(entries.get(2).sequence()).isEqualTo(2);
-                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
-                assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
-                assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(3);
+            assertThat(entries.get(0).sequence()).isEqualTo(0);
+            assertThat(entries.get(1).sequence()).isEqualTo(1);
+            assertThat(entries.get(2).sequence()).isEqualTo(2);
+            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+            assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
+            assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
         }
     }
 
@@ -95,13 +91,11 @@ class LogDbIntegrationTest {
 
             assertThat(third.sequence()).isEqualTo(2);
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(3);
-                assertThat(entries.get(0).sequence()).isEqualTo(0);
-                assertThat(entries.get(1).sequence()).isEqualTo(1);
-                assertThat(entries.get(2).sequence()).isEqualTo(2);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(3);
+            assertThat(entries.get(0).sequence()).isEqualTo(0);
+            assertThat(entries.get(1).sequence()).isEqualTo(1);
+            assertThat(entries.get(2).sequence()).isEqualTo(2);
         }
     }
 
@@ -114,13 +108,11 @@ class LogDbIntegrationTest {
             log.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
             log.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
 
-            try (LogReader reader = log.reader()) {
-                // Read starting from sequence 1
-                List<LogEntry> entries = reader.read(key, 1, 10);
-                assertThat(entries).hasSize(2);
-                assertThat(entries.get(0).sequence()).isEqualTo(1);
-                assertThat(entries.get(1).sequence()).isEqualTo(2);
-            }
+            // Read starting from sequence 1
+            List<LogEntry> entries = log.scan(key, 1, 10);
+            assertThat(entries).hasSize(2);
+            assertThat(entries.get(0).sequence()).isEqualTo(1);
+            assertThat(entries.get(1).sequence()).isEqualTo(2);
         }
     }
 
@@ -133,10 +125,8 @@ class LogDbIntegrationTest {
                 log.append(key, ("value-" + i).getBytes(StandardCharsets.UTF_8));
             }
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 3);
-                assertThat(entries).hasSize(3);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 3);
+            assertThat(entries).hasSize(3);
         }
     }
 
@@ -146,11 +136,9 @@ class LogDbIntegrationTest {
             byte[] key = "known".getBytes(StandardCharsets.UTF_8);
             log.append(key, "value".getBytes(StandardCharsets.UTF_8));
 
-            try (LogReader reader = log.reader()) {
-                byte[] unknownKey = "unknown".getBytes(StandardCharsets.UTF_8);
-                List<LogEntry> entries = reader.read(unknownKey, 0, 10);
-                assertThat(entries).isEmpty();
-            }
+            byte[] unknownKey = "unknown".getBytes(StandardCharsets.UTF_8);
+            List<LogEntry> entries = log.scan(unknownKey, 0, 10);
+            assertThat(entries).isEmpty();
         }
     }
 
@@ -164,16 +152,14 @@ class LogDbIntegrationTest {
             log.append(keyB, "value-b-0".getBytes(StandardCharsets.UTF_8));
             log.append(keyA, "value-a-1".getBytes(StandardCharsets.UTF_8));
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entriesA = reader.read(keyA, 0, 10);
-                assertThat(entriesA).hasSize(2);
-                assertThat(new String(entriesA.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-0");
-                assertThat(new String(entriesA.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-1");
+            List<LogEntry> entriesA = log.scan(keyA, 0, 10);
+            assertThat(entriesA).hasSize(2);
+            assertThat(new String(entriesA.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-0");
+            assertThat(new String(entriesA.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-1");
 
-                List<LogEntry> entriesB = reader.read(keyB, 0, 10);
-                assertThat(entriesB).hasSize(1);
-                assertThat(new String(entriesB.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-b-0");
-            }
+            List<LogEntry> entriesB = log.scan(keyB, 0, 10);
+            assertThat(entriesB).hasSize(1);
+            assertThat(new String(entriesB.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-b-0");
         }
     }
 
@@ -205,11 +191,9 @@ class LogDbIntegrationTest {
 
             log.append(key, value);
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(1);
-                assertThat(entries.get(0).value()).isEqualTo(value);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(1);
+            assertThat(entries.get(0).value()).isEqualTo(value);
         }
     }
 
@@ -224,11 +208,9 @@ class LogDbIntegrationTest {
 
             log.append(key, largeValue);
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(1);
-                assertThat(entries.get(0).value()).isEqualTo(largeValue);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(1);
+            assertThat(entries.get(0).value()).isEqualTo(largeValue);
         }
     }
 
@@ -242,14 +224,12 @@ class LogDbIntegrationTest {
             log.append(key, value);
             long afterAppend = System.currentTimeMillis();
 
-            try (LogReader reader = log.reader()) {
-                List<LogEntry> entries = reader.read(key, 0, 10);
-                assertThat(entries).hasSize(1);
-                // Timestamp should be within the append window
-                assertThat(entries.get(0).timestamp())
-                        .isGreaterThanOrEqualTo(beforeAppend)
-                        .isLessThanOrEqualTo(afterAppend);
-            }
+            List<LogEntry> entries = log.scan(key, 0, 10);
+            assertThat(entries).hasSize(1);
+            // Timestamp should be within the append window
+            assertThat(entries.get(0).timestamp())
+                    .isGreaterThanOrEqualTo(beforeAppend)
+                    .isLessThanOrEqualTo(afterAppend);
         }
     }
 }

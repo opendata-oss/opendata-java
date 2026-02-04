@@ -49,10 +49,10 @@ public class LogDbReader implements Closeable, LogRead {
      * new records. The reader opens storage independently and can coexist
      * with a separate LogDb writer.
      *
-     * @param config the log configuration
+     * @param config the reader configuration
      * @return a new LogDbReader instance
      */
-    public static LogDbReader open(LogDbConfig config) {
+    public static LogDbReader open(LogDbReaderConfig config) {
         if (config == null) {
             throw new IllegalArgumentException("config must not be null");
         }
@@ -96,7 +96,7 @@ public class LogDbReader implements Closeable, LogRead {
     }
 
     // Native methods
-    private static native long nativeCreate(LogDbConfig config);
+    private static native long nativeCreate(LogDbReaderConfig config);
     private static native LogEntry[] nativeScan(long handle, byte[] key, long startSequence, long maxEntries);
     private static native void nativeClose(long handle);
 }

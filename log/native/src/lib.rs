@@ -71,7 +71,9 @@ use common::storage::config::{
     StorageConfig,
 };
 use common::StorageRuntime;
-use log::{AppendResult, Config, LogDb, LogDbBuilder, LogDbReader, LogEntry, LogRead, Record};
+use log::{
+    AppendResult, Config, LogDb, LogDbBuilder, LogDbReader, LogEntry, LogRead, ReaderConfig, Record,
+};
 
 /// Handle to a LogDb instance with its associated Tokio runtime.
 ///
@@ -342,6 +344,73 @@ fn extract_object_store_config(
     } else {
         Err("Unknown ObjectStoreConfig type".to_string())
     }
+}
+
+/// Extracts StorageConfig from a Java LogDbReaderConfig object.
+fn extract_reader_storage_config(
+    env: &mut JNIEnv<'_>,
+    config: &JObject<'_>,
+) -> Result<StorageConfig, String> {
+    // Get the storage field from LogDbReaderConfig
+    let storage_obj = env
+        .call_method(
+            config,
+            "storage",
+            "()Ldev/opendata/common/StorageConfig;",
+            &[],
+        )
+        .map_err(|e| format!("Failed to get storage: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get storage object: {}", e))?;
+
+    // Check which type of StorageConfig it is using instanceof
+    let in_memory_class = env
+        .find_class("dev/opendata/common/StorageConfig$InMemory")
+        .map_err(|e| format!("Failed to find InMemory class: {}", e))?;
+
+    let slatedb_class = env
+        .find_class("dev/opendata/common/StorageConfig$SlateDb")
+        .map_err(|e| format!("Failed to find SlateDb class: {}", e))?;
+
+    if env
+        .is_instance_of(&storage_obj, &in_memory_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        Ok(StorageConfig::InMemory)
+    } else if env
+        .is_instance_of(&storage_obj, &slatedb_class)
+        .map_err(|e| format!("instanceof check failed: {}", e))?
+    {
+        extract_slatedb_config(env, &storage_obj)
+    } else {
+        Err("Unknown StorageConfig type".to_string())
+    }
+}
+
+/// Extracts the optional refresh interval from a Java LogDbReaderConfig object.
+fn extract_refresh_interval(
+    env: &mut JNIEnv<'_>,
+    config: &JObject<'_>,
+) -> Result<Option<std::time::Duration>, String> {
+    // Get the refreshIntervalMs field (returns Long, which may be null)
+    let interval_obj = env
+        .call_method(config, "refreshIntervalMs", "()Ljava/lang/Long;", &[])
+        .map_err(|e| format!("Failed to get refreshIntervalMs: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get refreshIntervalMs object: {}", e))?;
+
+    if interval_obj.is_null() {
+        return Ok(None);
+    }
+
+    // Unbox the Long to get the primitive value
+    let interval_ms = env
+        .call_method(&interval_obj, "longValue", "()J", &[])
+        .map_err(|e| format!("Failed to unbox refreshIntervalMs: {}", e))?
+        .j()
+        .map_err(|e| format!("Failed to get long value: {}", e))?;
+
+    Ok(Some(std::time::Duration::from_millis(interval_ms as u64)))
 }
 
 /// Appends a batch of records to the log with timestamp headers.
@@ -659,7 +728,7 @@ struct LogDbReaderHandle {
 /// Creates a new LogDbReader instance with the specified configuration.
 ///
 /// # Arguments
-/// * `config` - Java LogDbConfig object
+/// * `config` - Java LogDbReaderConfig object
 ///
 /// # Safety
 /// This is a JNI function - must be called from Java with valid JNIEnv.
@@ -667,10 +736,10 @@ struct LogDbReaderHandle {
 pub extern "system" fn Java_dev_opendata_LogDbReader_nativeCreate<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
-    config: JObject<'local>,
+    java_config: JObject<'local>,
 ) -> jlong {
-    // Extract storage config from LogDbConfig
-    let storage_config = match extract_storage_config(&mut env, &config) {
+    // Extract storage config from LogDbReaderConfig
+    let storage_config = match extract_reader_storage_config(&mut env, &java_config) {
         Ok(c) => c,
         Err(e) => {
             let _ = env.throw_new("java/lang/IllegalArgumentException", e);
@@ -678,10 +747,21 @@ pub extern "system" fn Java_dev_opendata_LogDbReader_nativeCreate<'local>(
         }
     };
 
-    let config = Config {
+    // Start with default config and override fields as needed
+    let mut config = ReaderConfig {
         storage: storage_config,
-        ..Config::default()
+        ..ReaderConfig::default()
     };
+
+    // Override refresh interval if explicitly provided
+    match extract_refresh_interval(&mut env, &java_config) {
+        Ok(Some(interval)) => config.refresh_interval = interval,
+        Ok(None) => {} // Use default from ReaderConfig
+        Err(e) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", e);
+            return 0;
+        }
+    }
 
     // Create a dedicated runtime for this LogDbReader instance
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -730,7 +810,10 @@ pub extern "system" fn Java_dev_opendata_LogDbReader_nativeScan<'local>(
     max_entries: jlong,
 ) -> jobjectArray {
     if handle == 0 {
-        let _ = env.throw_new("java/lang/NullPointerException", "LogDbReader handle is null");
+        let _ = env.throw_new(
+            "java/lang/NullPointerException",
+            "LogDbReader handle is null",
+        );
         return std::ptr::null_mut();
     }
 

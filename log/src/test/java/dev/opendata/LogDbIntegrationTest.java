@@ -235,24 +235,24 @@ class LogDbIntegrationTest {
 
     @Test
     void shouldReadFromSeparateLogDbReader(@TempDir Path tempDir) {
-        var config = new LogDbConfig(
-                new StorageConfig.SlateDb(
-                        "separate-reader-test",
-                        new ObjectStoreConfig.Local(tempDir.toString())
-                )
+        var storage = new StorageConfig.SlateDb(
+                "separate-reader-test",
+                new ObjectStoreConfig.Local(tempDir.toString())
         );
+        var writerConfig = new LogDbConfig(storage);
+        var readerConfig = new LogDbReaderConfig(storage);
 
         byte[] key = "e2e-key".getBytes(StandardCharsets.UTF_8);
 
         // Write with LogDb
-        try (LogDb writer = LogDb.open(config)) {
+        try (LogDb writer = LogDb.open(writerConfig)) {
             writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
             writer.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
             writer.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
         }
 
         // Read with separate LogDbReader
-        try (LogDbReader reader = LogDbReader.open(config)) {
+        try (LogDbReader reader = LogDbReader.open(readerConfig)) {
             List<LogEntry> entries = reader.scan(key, 0, 10);
 
             assertThat(entries).hasSize(3);
@@ -267,22 +267,22 @@ class LogDbIntegrationTest {
 
     @Test
     void shouldCoexistWriterAndReaderWithoutFencingError(@TempDir Path tempDir) {
-        var config = new LogDbConfig(
-                new StorageConfig.SlateDb(
-                        "concurrent-test",
-                        new ObjectStoreConfig.Local(tempDir.toString())
-                )
+        var storage = new StorageConfig.SlateDb(
+                "concurrent-test",
+                new ObjectStoreConfig.Local(tempDir.toString())
         );
+        var writerConfig = new LogDbConfig(storage);
+        var readerConfig = new LogDbReaderConfig(storage);
 
         byte[] key = "concurrent-key".getBytes(StandardCharsets.UTF_8);
 
         // Open writer and keep it open
-        try (LogDb writer = LogDb.open(config)) {
+        try (LogDb writer = LogDb.open(writerConfig)) {
             // Write initial data
             writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
 
             // Open reader while writer is still open - this should NOT cause fencing error
-            try (LogDbReader reader = LogDbReader.open(config)) {
+            try (LogDbReader reader = LogDbReader.open(readerConfig)) {
                 // Reader can read the data written by writer
                 List<LogEntry> entries = reader.scan(key, 0, 10);
                 assertThat(entries).hasSize(1);
@@ -298,6 +298,31 @@ class LogDbIntegrationTest {
 
             List<LogEntry> finalEntries = writer.scan(key, 0, 10);
             assertThat(finalEntries).hasSize(4);
+        }
+    }
+
+    @Test
+    void shouldOpenReaderWithCustomRefreshInterval(@TempDir Path tempDir) {
+        var storage = new StorageConfig.SlateDb(
+                "custom-refresh-test",
+                new ObjectStoreConfig.Local(tempDir.toString())
+        );
+        var writerConfig = new LogDbConfig(storage);
+        // Use a custom refresh interval of 500ms
+        var readerConfig = new LogDbReaderConfig(storage, 500L);
+
+        byte[] key = "refresh-key".getBytes(StandardCharsets.UTF_8);
+
+        // Write with LogDb
+        try (LogDb writer = LogDb.open(writerConfig)) {
+            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
+        }
+
+        // Read with LogDbReader using custom refresh interval
+        try (LogDbReader reader = LogDbReader.open(readerConfig)) {
+            List<LogEntry> entries = reader.scan(key, 0, 10);
+            assertThat(entries).hasSize(1);
+            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
         }
     }
 

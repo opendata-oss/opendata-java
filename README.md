@@ -15,14 +15,12 @@ Prerequisites:
 - Rust toolchain
 - Java 17+
 - Maven 3.8+
-- Local clone of [opendata](https://github.com/opendata-oss/opendata) as sibling directory
-
 ```bash
-# Build native library
+# Build native library (fetches opendata dependency via git automatically)
 cd log/native
 cargo build --release
 
-# Build Java modules
+# Build and test Java modules
 cd ../..
-mvn clean install
+mvn verify -Djava.library.path=log/native/target/release
 ```

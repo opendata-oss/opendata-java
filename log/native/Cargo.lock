@@ -275,6 +275,7 @@ dependencies = [
 [[package]]
 name = "common"
 version = "0.1.0"
+source = "git+https://github.com/opendata-oss/opendata.git#74d36908ffa729652ba665cd335f01b661bcfc0c"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1318,6 +1319,7 @@ dependencies = [
 [[package]]
 name = "log"
 version = "0.1.0"
+source = "git+https://github.com/opendata-oss/opendata.git#74d36908ffa729652ba665cd335f01b661bcfc0c"
 dependencies = [
  "async-trait",
  "bytes",

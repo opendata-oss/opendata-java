@@ -28,9 +28,6 @@ jobs:
       - name: Checkout opendata-java
         uses: actions/checkout@v4
 
-      - name: Checkout opendata
-        run: git clone --depth 1 https://github.com/opendata-oss/opendata.git ../opendata
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

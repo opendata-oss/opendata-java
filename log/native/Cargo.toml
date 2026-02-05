@@ -11,12 +11,5 @@ jni = "0.21"
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
-# Local path to opendata crates (sibling directory)
-# Assumes: ../opendata/ and ../opendata-java/ are siblings
-[dependencies.log]
-package = "log"
-path = "../../../opendata/log"
-
-[dependencies.common]
-package = "common"
-path = "../../../opendata/common"
+log = { git = "https://github.com/opendata-oss/opendata.git" }
+common = { git = "https://github.com/opendata-oss/opendata.git" }

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout opendata-java
+        uses: actions/checkout@v4
+
+      - name: Checkout opendata
+        uses: actions/checkout@v4
+        with:
+          repository: opendata-oss/opendata
+          path: ../opendata
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            log/native/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('log/native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        working-directory: log/native
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        working-directory: log/native
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build native JNI library
+        working-directory: log/native
+        run: cargo build --release
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven local repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Maven build and test
+        run: mvn verify -Djava.library.path=log/native/target/release

@@ -72,7 +72,8 @@ use common::storage::config::{
 };
 use common::StorageRuntime;
 use log::{
-    AppendResult, Config, LogDb, LogDbBuilder, LogDbReader, LogEntry, LogRead, ReaderConfig, Record,
+    AppendError, AppendOutput, Config, LogDb, LogDbBuilder, LogDbReader, LogEntry, LogRead,
+    ReaderConfig, Record, SegmentConfig,
 };
 
 /// Handle to a LogDb instance with its associated Tokio runtime.
@@ -117,9 +118,18 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeCreate<'local>(
         }
     };
 
+    // Extract segment config from LogDbConfig
+    let segment_config = match extract_segment_config(&mut env, &config) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", e);
+            return 0;
+        }
+    };
+
     let config = Config {
         storage: storage_config,
-        ..Config::default()
+        segmentation: segment_config,
     };
 
     // Create a dedicated runtime for this LogDb instance (for user operations)
@@ -346,6 +356,43 @@ fn extract_object_store_config(
     }
 }
 
+/// Extracts SegmentConfig from a Java LogDbConfig object.
+fn extract_segment_config(
+    env: &mut JNIEnv<'_>,
+    config: &JObject<'_>,
+) -> Result<SegmentConfig, String> {
+    let seg_obj = env
+        .call_method(
+            config,
+            "segmentation",
+            "()Ldev/opendata/SegmentConfig;",
+            &[],
+        )
+        .map_err(|e| format!("Failed to get segmentation: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get segmentation object: {}", e))?;
+
+    // Get sealIntervalMs (nullable Long)
+    let interval_obj = env
+        .call_method(&seg_obj, "sealIntervalMs", "()Ljava/lang/Long;", &[])
+        .map_err(|e| format!("Failed to get sealIntervalMs: {}", e))?
+        .l()
+        .map_err(|e| format!("Failed to get sealIntervalMs object: {}", e))?;
+
+    let seal_interval = if interval_obj.is_null() {
+        None
+    } else {
+        let ms = env
+            .call_method(&interval_obj, "longValue", "()J", &[])
+            .map_err(|e| format!("Failed to unbox sealIntervalMs: {}", e))?
+            .j()
+            .map_err(|e| format!("Failed to get long value: {}", e))?;
+        Some(std::time::Duration::from_millis(ms as u64))
+    };
+
+    Ok(SegmentConfig { seal_interval })
+}
+
 /// Extracts StorageConfig from a Java LogDbReaderConfig object.
 fn extract_reader_storage_config(
     env: &mut JNIEnv<'_>,
@@ -413,7 +460,7 @@ fn extract_refresh_interval(
     Ok(Some(std::time::Duration::from_millis(interval_ms as u64)))
 }
 
-/// Appends a batch of records to the log with timestamp headers.
+/// Appends a batch of records without blocking for queue space.
 ///
 /// Each value is stored as: `[8-byte timestamp (big-endian i64)] + [original payload]`
 /// The timestamp is read from each Java Record object (captured at submission time).
@@ -429,7 +476,7 @@ fn extract_refresh_interval(
 /// JNI function - handle must be a valid pointer returned by nativeCreate.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
+pub extern "system" fn Java_dev_opendata_LogDb_nativeTryAppend<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -442,13 +489,94 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
 
     let log_handle = unsafe { &*(handle as *const LogHandle) };
 
-    // Convert Java Record[] to Rust Vec<Record>
+    let (rust_records, first_timestamp_ms) = match convert_java_records(&mut env, records) {
+        Ok(v) => v,
+        Err(()) => return std::ptr::null_mut(), // exception already thrown
+    };
+
+    let result = log_handle
+        .runtime_handle
+        .block_on(async { log_handle.log.try_append(rust_records).await });
+
+    match result {
+        Ok(append_output) => {
+            match create_append_result(&mut env, &append_output, first_timestamp_ms) {
+                Ok(obj) => obj.into_raw(),
+                Err(e) => {
+                    let _ =
+                        env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                    std::ptr::null_mut()
+                }
+            }
+        }
+        Err(e) => {
+            throw_append_error(&mut env, e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Appends a batch of records, blocking up to `timeoutMs` for queue space.
+///
+/// # Safety
+/// JNI function - handle must be a valid pointer returned by nativeCreate.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "system" fn Java_dev_opendata_LogDb_nativeAppendTimeout<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    records: jobjectArray,
+    timeout_ms: jlong,
+) -> jobject {
+    if handle == 0 {
+        let _ = env.throw_new("java/lang/NullPointerException", "LogDb handle is null");
+        return std::ptr::null_mut();
+    }
+
+    let log_handle = unsafe { &*(handle as *const LogHandle) };
+
+    let (rust_records, first_timestamp_ms) = match convert_java_records(&mut env, records) {
+        Ok(v) => v,
+        Err(()) => return std::ptr::null_mut(),
+    };
+
+    let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+    let result = log_handle
+        .runtime_handle
+        .block_on(async { log_handle.log.append_timeout(rust_records, timeout).await });
+
+    match result {
+        Ok(append_output) => {
+            match create_append_result(&mut env, &append_output, first_timestamp_ms) {
+                Ok(obj) => obj.into_raw(),
+                Err(e) => {
+                    let _ =
+                        env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
+                    std::ptr::null_mut()
+                }
+            }
+        }
+        Err(e) => {
+            throw_append_error(&mut env, e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Converts a Java Record[] into a Rust `Vec<Record>` and the first record's timestamp.
+///
+/// Returns `Err(())` if a JNI exception was thrown (caller should return null).
+fn convert_java_records(
+    env: &mut JNIEnv<'_>,
+    records: jobjectArray,
+) -> Result<(Vec<Record>, i64), ()> {
     let records_array = unsafe { JObjectArray::from_raw(records) };
     let len = match env.get_array_length(&records_array) {
         Ok(l) => l as usize,
         Err(e) => {
             let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-            return std::ptr::null_mut();
+            return Err(());
         }
     };
 
@@ -457,7 +585,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             "java/lang/IllegalArgumentException",
             "Records array is empty",
         );
-        return std::ptr::null_mut();
+        return Err(());
     }
 
     let mut rust_records = Vec::with_capacity(len);
@@ -468,7 +596,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             Ok(obj) => obj,
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
 
@@ -477,7 +605,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             Ok(v) => v.l().unwrap(),
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
         let key_array: JByteArray = key_obj.into();
@@ -485,7 +613,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             Ok(b) => Bytes::from(b),
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
 
@@ -494,7 +622,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             Ok(v) => v.l().unwrap(),
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
         let value_array: JByteArray = value_obj.into();
@@ -504,7 +632,7 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
             Ok(v) => v.j().unwrap(),
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
 
@@ -513,11 +641,11 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
         }
 
         // Convert value with timestamp header
-        let value_bytes = match copy_value_with_timestamp(&mut env, &value_array, timestamp_ms) {
+        let value_bytes = match copy_value_with_timestamp(env, &value_array, timestamp_ms) {
             Ok(b) => b,
             Err(e) => {
                 let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                return std::ptr::null_mut();
+                return Err(());
             }
         };
 
@@ -527,26 +655,35 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeAppend<'local>(
         });
     }
 
-    // Use block_on with separate compaction runtime to avoid deadlocks
-    let result = log_handle
-        .runtime_handle
-        .block_on(async { log_handle.log.append(rust_records).await });
+    Ok((rust_records, first_timestamp_ms))
+}
 
-    match result {
-        Ok(append_result) => {
-            // Create Java AppendResult object with first record's timestamp
-            match create_append_result(&mut env, &append_result, first_timestamp_ms) {
-                Ok(obj) => obj.into_raw(),
-                Err(e) => {
-                    let _ =
-                        env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-                    std::ptr::null_mut()
-                }
-            }
+/// Maps an `AppendError` to the appropriate Java exception and throws it.
+fn throw_append_error(env: &mut JNIEnv<'_>, error: AppendError) {
+    match error {
+        AppendError::QueueFull(_) => {
+            let _ = env.throw_new(
+                "dev/opendata/common/QueueFullException",
+                "Write queue is full",
+            );
         }
-        Err(e) => {
-            let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
-            std::ptr::null_mut()
+        AppendError::Timeout(_) => {
+            let _ = env.throw_new(
+                "dev/opendata/common/AppendTimeoutException",
+                "Timed out waiting for queue space",
+            );
+        }
+        AppendError::Shutdown => {
+            let _ = env.throw_new(
+                "dev/opendata/common/OpenDataNativeException",
+                "Writer has shut down",
+            );
+        }
+        AppendError::InvalidRecord(msg) => {
+            let _ = env.throw_new(
+                "dev/opendata/common/OpenDataNativeException",
+                format!("Invalid record: {}", msg),
+            );
         }
     }
 }
@@ -628,8 +765,11 @@ pub extern "system" fn Java_dev_opendata_LogDb_nativeClose<'local>(
             compaction_runtime,
         } = *log_handle;
 
-        // Close the log using block_on
-        let result = runtime_handle.block_on(async { log.close().await });
+        // Flush pending writes then close the log
+        let result = runtime_handle.block_on(async {
+            log.flush().await?;
+            log.close().await
+        });
 
         if let Err(e) = result {
             let _ = env.throw_new("dev/opendata/common/OpenDataNativeException", e.to_string());
@@ -883,10 +1023,10 @@ pub extern "system" fn Java_dev_opendata_LogDbReader_nativeClose<'local>(
 // Helper Functions
 // =============================================================================
 
-/// Creates a Java AppendResult object from a Rust AppendResult.
+/// Creates a Java AppendResult object from a Rust AppendOutput.
 fn create_append_result<'local>(
     env: &mut JNIEnv<'local>,
-    result: &AppendResult,
+    result: &AppendOutput,
     timestamp_ms: i64,
 ) -> Result<JObject<'local>, jni::errors::Error> {
     let class = env.find_class("dev/opendata/AppendResult")?;

@@ -1,5 +1,8 @@
 package dev.opendata;
 
+import dev.opendata.common.AppendTimeoutException;
+import dev.opendata.common.QueueFullException;
+
 import java.io.Closeable;
 import java.util.List;
 
@@ -53,31 +56,65 @@ public class LogDb implements Closeable, LogRead {
     }
 
     /**
-     * Appends a batch of records to the log.
+     * Appends a batch of records without blocking for queue space.
      *
-     * <p>This is a blocking call that returns when all records have been persisted.
-     * For better throughput, batch multiple records into a single call.
+     * <p>Fails immediately with {@link QueueFullException} if the write queue is full.
+     * The caller can retry the same {@code records} array after backpressure clears.
      *
      * @param records the records to append
      * @return the result of the append operation (sequence of first record)
+     * @throws QueueFullException if the write queue is full
      */
-    public AppendResult append(Record[] records) {
+    public AppendResult tryAppend(Record[] records) {
         checkNotClosed();
-        return nativeAppend(handle, records);
+        return nativeTryAppend(handle, records);
     }
 
     /**
-     * Appends a single record to the log.
+     * Appends a single record without blocking for queue space.
      *
      * <p>Convenience method for single-record appends. For better throughput,
-     * prefer {@link #append(Record[])} with batched records.
+     * prefer {@link #tryAppend(Record[])} with batched records.
      *
      * @param key   the key to append under
      * @param value the value to append
      * @return the result of the append operation
+     * @throws QueueFullException if the write queue is full
      */
-    public AppendResult append(byte[] key, byte[] value) {
-        return append(new Record[]{new Record(key, value)});
+    public AppendResult tryAppend(byte[] key, byte[] value) {
+        return tryAppend(new Record[]{new Record(key, value)});
+    }
+
+    /**
+     * Appends a batch of records, blocking up to {@code timeoutMs} for queue space.
+     *
+     * <p>If the write queue does not drain within the deadline, throws
+     * {@link AppendTimeoutException}. The caller can retry the same {@code records}
+     * array.
+     *
+     * @param records   the records to append
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return the result of the append operation (sequence of first record)
+     * @throws AppendTimeoutException if the timeout expires before queue space is available
+     * @throws QueueFullException     if the write queue is full (unlikely with timeout)
+     */
+    public AppendResult appendTimeout(Record[] records, long timeoutMs) {
+        checkNotClosed();
+        return nativeAppendTimeout(handle, records, timeoutMs);
+    }
+
+    /**
+     * Appends a single record, blocking up to {@code timeoutMs} for queue space.
+     *
+     * @param key       the key to append under
+     * @param value     the value to append
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return the result of the append operation
+     * @throws AppendTimeoutException if the timeout expires before queue space is available
+     * @throws QueueFullException     if the write queue is full (unlikely with timeout)
+     */
+    public AppendResult appendTimeout(byte[] key, byte[] value, long timeoutMs) {
+        return appendTimeout(new Record[]{new Record(key, value)}, timeoutMs);
     }
 
     @Override
@@ -119,7 +156,8 @@ public class LogDb implements Closeable, LogRead {
 
     // Native methods
     private static native long nativeCreate(LogDbConfig config);
-    private static native AppendResult nativeAppend(long handle, Record[] records);
+    private static native AppendResult nativeTryAppend(long handle, Record[] records);
+    private static native AppendResult nativeAppendTimeout(long handle, Record[] records, long timeoutMs);
     private static native LogEntry[] nativeScan(long handle, byte[] key, long startSequence, long maxEntries);
     private static native void nativeFlush(long handle);
     private static native void nativeClose(long handle);

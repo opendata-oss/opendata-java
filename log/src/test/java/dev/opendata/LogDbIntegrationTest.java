@@ -43,7 +43,7 @@ class LogDbIntegrationTest {
             byte[] key = "test-key".getBytes(StandardCharsets.UTF_8);
             byte[] value = "test-value".getBytes(StandardCharsets.UTF_8);
 
-            AppendResult result = log.append(key, value);
+            AppendResult result = log.tryAppend(key, value);
 
             assertThat(result.sequence()).isEqualTo(0);
 
@@ -65,7 +65,7 @@ class LogDbIntegrationTest {
                 new Record(key, "value-2".getBytes(StandardCharsets.UTF_8)),
             };
 
-            AppendResult result = log.append(records);
+            AppendResult result = log.tryAppend(records);
 
             assertThat(result.sequence()).isEqualTo(0);
 
@@ -85,9 +85,9 @@ class LogDbIntegrationTest {
         try (LogDb log = LogDb.openInMemory()) {
             byte[] key = "seq-key".getBytes(StandardCharsets.UTF_8);
 
-            log.append(key, "first".getBytes(StandardCharsets.UTF_8));
-            log.append(key, "second".getBytes(StandardCharsets.UTF_8));
-            AppendResult third = log.append(key, "third".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "first".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "second".getBytes(StandardCharsets.UTF_8));
+            AppendResult third = log.tryAppend(key, "third".getBytes(StandardCharsets.UTF_8));
 
             assertThat(third.sequence()).isEqualTo(2);
 
@@ -104,9 +104,9 @@ class LogDbIntegrationTest {
         try (LogDb log = LogDb.openInMemory()) {
             byte[] key = "offset-key".getBytes(StandardCharsets.UTF_8);
 
-            log.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
-            log.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
-            log.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "value-1".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "value-2".getBytes(StandardCharsets.UTF_8));
 
             // Read starting from sequence 1
             List<LogEntry> entries = log.scan(key, 1, 10);
@@ -122,7 +122,7 @@ class LogDbIntegrationTest {
             byte[] key = "limit-key".getBytes(StandardCharsets.UTF_8);
 
             for (int i = 0; i < 10; i++) {
-                log.append(key, ("value-" + i).getBytes(StandardCharsets.UTF_8));
+                log.tryAppend(key, ("value-" + i).getBytes(StandardCharsets.UTF_8));
             }
 
             List<LogEntry> entries = log.scan(key, 0, 3);
@@ -134,7 +134,7 @@ class LogDbIntegrationTest {
     void shouldReturnEmptyListForUnknownKey() {
         try (LogDb log = LogDb.openInMemory()) {
             byte[] key = "known".getBytes(StandardCharsets.UTF_8);
-            log.append(key, "value".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(key, "value".getBytes(StandardCharsets.UTF_8));
 
             byte[] unknownKey = "unknown".getBytes(StandardCharsets.UTF_8);
             List<LogEntry> entries = log.scan(unknownKey, 0, 10);
@@ -148,9 +148,9 @@ class LogDbIntegrationTest {
             byte[] keyA = "key-a".getBytes(StandardCharsets.UTF_8);
             byte[] keyB = "key-b".getBytes(StandardCharsets.UTF_8);
 
-            log.append(keyA, "value-a-0".getBytes(StandardCharsets.UTF_8));
-            log.append(keyB, "value-b-0".getBytes(StandardCharsets.UTF_8));
-            log.append(keyA, "value-a-1".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(keyA, "value-a-0".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(keyB, "value-b-0".getBytes(StandardCharsets.UTF_8));
+            log.tryAppend(keyA, "value-a-1".getBytes(StandardCharsets.UTF_8));
 
             List<LogEntry> entriesA = log.scan(keyA, 0, 10);
             assertThat(entriesA).hasSize(2);
@@ -171,7 +171,7 @@ class LogDbIntegrationTest {
         byte[] key = "key".getBytes(StandardCharsets.UTF_8);
         byte[] value = "value".getBytes(StandardCharsets.UTF_8);
 
-        assertThatThrownBy(() -> log.append(key, value))
+        assertThatThrownBy(() -> log.tryAppend(key, value))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("closed");
     }
@@ -189,7 +189,7 @@ class LogDbIntegrationTest {
             byte[] key = "persistent-key".getBytes(StandardCharsets.UTF_8);
             byte[] value = "persistent-value".getBytes(StandardCharsets.UTF_8);
 
-            log.append(key, value);
+            log.tryAppend(key, value);
 
             List<LogEntry> entries = log.scan(key, 0, 10);
             assertThat(entries).hasSize(1);
@@ -206,7 +206,7 @@ class LogDbIntegrationTest {
                 largeValue[i] = (byte) (i % 256);
             }
 
-            log.append(key, largeValue);
+            log.tryAppend(key, largeValue);
 
             List<LogEntry> entries = log.scan(key, 0, 10);
             assertThat(entries).hasSize(1);
@@ -221,7 +221,7 @@ class LogDbIntegrationTest {
             byte[] value = "ts-value".getBytes(StandardCharsets.UTF_8);
 
             long beforeAppend = System.currentTimeMillis();
-            log.append(key, value);
+            log.tryAppend(key, value);
             long afterAppend = System.currentTimeMillis();
 
             List<LogEntry> entries = log.scan(key, 0, 10);
@@ -244,11 +244,12 @@ class LogDbIntegrationTest {
 
         byte[] key = "e2e-key".getBytes(StandardCharsets.UTF_8);
 
-        // Write with LogDb
+        // Write with LogDb and flush to ensure durability before reader opens
         try (LogDb writer = LogDb.open(writerConfig)) {
-            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
-            writer.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
-            writer.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-1".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-2".getBytes(StandardCharsets.UTF_8));
+            writer.flush();
         }
 
         // Read with separate LogDbReader
@@ -279,7 +280,7 @@ class LogDbIntegrationTest {
         // Open writer and keep it open
         try (LogDb writer = LogDb.open(writerConfig)) {
             // Write initial data
-            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
 
             // Open reader while writer is still open - this should NOT cause fencing error
             try (LogDbReader reader = LogDbReader.open(readerConfig)) {
@@ -289,12 +290,12 @@ class LogDbIntegrationTest {
                 assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
 
                 // Writer can still write more data while reader is open
-                writer.append(key, "value-1".getBytes(StandardCharsets.UTF_8));
-                writer.append(key, "value-2".getBytes(StandardCharsets.UTF_8));
+                writer.tryAppend(key, "value-1".getBytes(StandardCharsets.UTF_8));
+                writer.tryAppend(key, "value-2".getBytes(StandardCharsets.UTF_8));
             }
 
             // After reader closes, writer should still work
-            writer.append(key, "value-3".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-3".getBytes(StandardCharsets.UTF_8));
 
             List<LogEntry> finalEntries = writer.scan(key, 0, 10);
             assertThat(finalEntries).hasSize(4);
@@ -313,9 +314,10 @@ class LogDbIntegrationTest {
 
         byte[] key = "refresh-key".getBytes(StandardCharsets.UTF_8);
 
-        // Write with LogDb
+        // Write with LogDb and flush to ensure durability before reader opens
         try (LogDb writer = LogDb.open(writerConfig)) {
-            writer.append(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            writer.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
+            writer.flush();
         }
 
         // Read with LogDbReader using custom refresh interval

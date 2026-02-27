@@ -15,8 +15,8 @@ Thank you for your interest in contributing! This project provides Java bindings
 
 This project contains:
 
-- `log/native` - Rust JNI bindings to the OpenData Log
-- `log/src` - Java interface classes (`dev.opendata` package)
+- `log/src` - Java interface classes and Panama FFM bindings (`dev.opendata` package)
+- `common/src` - Shared utilities, configuration records, and exceptions
 
 Before contributing, read the [README](README.md).
 
@@ -59,37 +59,22 @@ Open an issue describing:
 ```
 your-workspace/
 ├── opendata/          # Clone of opendata repo
-└── opendata-java/     # This project (opendata-omb)
+└── opendata-java/     # This project
 ```
 
 ### Building
 
 ```bash
-# Build native JNI library
-cd log/native
+# Build the native C library
+cd ../opendata/log/c
 cargo build --release
 
-# Build Java modules
-cd ../..
+# Build Java modules (generates FFM bindings via jextract)
+cd ../../../opendata-java
 ./gradlew build
 ```
 
 ## Code Style
-
-### Rust
-
-Run `cargo fmt` before committing:
-
-```bash
-cd log/native
-cargo fmt
-```
-
-All code must pass clippy with no warnings:
-
-```bash
-cargo clippy --all-targets -- -D warnings
-```
 
 ### Java
 
@@ -101,32 +86,12 @@ cargo clippy --all-targets -- -D warnings
 ### Guidelines
 
 - Write clear, self-documenting code
-- Add comments for complex logic, especially JNI boundary handling
-- Document any overhead introduced (see `lib.rs` header)
-- Prefer returning errors over panicking in JNI code
+- Add comments for complex logic, especially FFM boundary handling
+- Prefer returning errors over panicking in native code
 
 ## Testing
 
 Include tests for new functionality.
-
-### Rust Test Style
-
-Use the `should_` prefix and given/when/then pattern:
-
-```rust
-#[test]
-fn should_extract_timestamp_from_header() {
-    // given
-    let value = create_timestamped_value(12345, b"payload");
-
-    // when
-    let (timestamp, payload) = extract_timestamp_and_payload(&value);
-
-    // then
-    assert_eq!(timestamp, 12345);
-    assert_eq!(payload, b"payload");
-}
-```
 
 ### Java Test Style
 
@@ -138,7 +103,7 @@ void shouldAppendAndReadEntry() {
     byte[] value = "test-value".getBytes();
 
     // when
-    AppendResult result = log.append(key, value);
+    AppendResult result = log.tryAppend(key, value);
 
     // then
     assertThat(result.sequence()).isGreaterThan(0);
@@ -148,21 +113,20 @@ void shouldAppendAndReadEntry() {
 ### Running Tests
 
 ```bash
-# Rust tests
-cd log/native
-cargo test
+# Build C library first
+cd ../opendata/log/c && cargo build --release
 
-# Java tests (requires native library built)
+# Java tests (requires C library built)
+cd ../../../opendata-java
 ./gradlew test
 ```
 
 ## Pull Request Process
 
 1. Ensure your code builds and tests pass
-2. Run `cargo fmt` and `cargo clippy`
-3. Update documentation if needed
-4. Add a clear description of changes
-5. Reference any related issues
+2. Update documentation if needed
+3. Add a clear description of changes
+4. Reference any related issues
 
 ## License
 

@@ -1,8 +1,65 @@
+plugins {
+    id 'de.infolektuell.jextract' version '1.2.0'
+}
+
+// ==============================================================================
+// jextract configuration to generate Java bindings for the opendata-log C library.
+// ==============================================================================
+
+def opendataLogHeader = layout.projectDirectory.file('../../opendata/log/c/include/opendata_log.h')
+def opendataLogHeaderText = opendataLogHeader.asFile.getText('UTF-8')
+// Captures top-level `opendata_log_*` function names (excluding typedefs/comments).
+def includeFunctions = ((opendataLogHeaderText =~ /(?m)^(?!\s*(?:\/\/|\/\*|\*))\s*(?!typedef\b).*?\b(opendata_log_[A-Za-z0-9_]+)\s*\(/).collect { it[1] } as Set).toList().sort()
+// Captures public `OPENDATA_LOG_*` preprocessor constants.
+def includeConstants = ((opendataLogHeaderText =~ /(?m)^\s*#define\s+(OPENDATA_LOG_[A-Z0-9_]+)\b/).collect { it[1] } as Set).toList().sort()
+// Captures named struct types declared as `typedef struct opendata_log_* { ... }`.
+def includeStructs = ((opendataLogHeaderText =~ /(?m)^\s*typedef\s+struct\s+(opendata_log_[A-Za-z0-9_]+)\s*\{/).collect { it[1] } as Set).toList().sort()
+// Captures `opendata_log_*` typedef names, including function-pointer typedef aliases.
+def includeTypedefs = ((opendataLogHeaderText =~ /(?ms)^\s*typedef\b.*?(?:\(\*\s*)?(opendata_log_[A-Za-z0-9_]+)\s*\)?\s*;/).collect { it[1] } as Set).toList().sort()
+
+def opendataLogJextractLibrary = jextract.libraries.create('opendataLog') {
+    header = opendataLogHeader
+    includes = [layout.projectDirectory.dir('../../opendata/log/c/include')]
+    targetPackage = 'dev.opendata.ffi'
+    headerClassName = 'Native'
+    libraries = ['opendata_log_c']
+    useSystemLoadLibrary = true
+    whitelist {
+        functions = includeFunctions
+        constants = includeConstants
+        structs = includeStructs
+        typedefs = includeTypedefs
+    }
+}
+
+// ==============================================================================
+// Standard Java library configuration below.
+// ==============================================================================
+
+sourceSets {
+    main {
+        jextract {
+            libraries.add(opendataLogJextractLibrary)
+        }
+    }
+}
+
 dependencies {
     implementation project(':common')
 }
 
 test {
-    jvmArgs "-Djava.library.path=${project.projectDir}/native/target/release"
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+
+    // The C library is part of a Cargo workspace, so output goes to the workspace-level target/.
+    def opendataRoot = layout.projectDirectory.dir('../../opendata').asFile.absoluteFile
+    def libraryPathEntries = [
+        new File(opendataRoot, 'target/release').absolutePath,
+        new File(opendataRoot, 'target/debug').absolutePath
+    ]
+    def existingLibraryPath = System.getProperty('java.library.path')
+    if (existingLibraryPath != null && !existingLibraryPath.isBlank()) {
+        libraryPathEntries.add(existingLibraryPath)
+    }
+    jvmArgs "-Djava.library.path=${libraryPathEntries.join(File.pathSeparator)}"
 }

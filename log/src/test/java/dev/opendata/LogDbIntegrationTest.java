@@ -7,20 +7,30 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Integration tests for LogDb that exercise the native JNI bindings.
+ * Integration tests for LogDb that exercise the Panama FFM bindings.
  *
- * <p>These tests require the native library to be built. Run:
+ * <p>These tests require the native C library to be built. Run:
  * <pre>
- *   cd log/native && cargo build --release
+ *   cd ../opendata/log/c && cargo build --release
  * </pre>
  */
 class LogDbIntegrationTest {
+
+    private static List<LogEntry> collectEntries(LogScanIterator iter) {
+        List<LogEntry> entries = new ArrayList<>();
+        LogEntry entry;
+        while ((entry = iter.next()) != null) {
+            entries.add(entry);
+        }
+        return entries;
+    }
 
     @Test
     void shouldOpenAndCloseInMemoryLog() {
@@ -47,11 +57,13 @@ class LogDbIntegrationTest {
 
             assertThat(result.sequence()).isEqualTo(0);
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(1);
-            assertThat(entries.get(0).sequence()).isEqualTo(0);
-            assertThat(entries.get(0).key()).isEqualTo(key);
-            assertThat(entries.get(0).value()).isEqualTo(value);
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(entries.get(0).sequence()).isEqualTo(0);
+                assertThat(entries.get(0).key()).isEqualTo(key);
+                assertThat(entries.get(0).value()).isEqualTo(value);
+            }
         }
     }
 
@@ -69,14 +81,16 @@ class LogDbIntegrationTest {
 
             assertThat(result.sequence()).isEqualTo(0);
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(3);
-            assertThat(entries.get(0).sequence()).isEqualTo(0);
-            assertThat(entries.get(1).sequence()).isEqualTo(1);
-            assertThat(entries.get(2).sequence()).isEqualTo(2);
-            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
-            assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
-            assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(3);
+                assertThat(entries.get(0).sequence()).isEqualTo(0);
+                assertThat(entries.get(1).sequence()).isEqualTo(1);
+                assertThat(entries.get(2).sequence()).isEqualTo(2);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+                assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
+                assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
+            }
         }
     }
 
@@ -91,11 +105,13 @@ class LogDbIntegrationTest {
 
             assertThat(third.sequence()).isEqualTo(2);
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(3);
-            assertThat(entries.get(0).sequence()).isEqualTo(0);
-            assertThat(entries.get(1).sequence()).isEqualTo(1);
-            assertThat(entries.get(2).sequence()).isEqualTo(2);
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(3);
+                assertThat(entries.get(0).sequence()).isEqualTo(0);
+                assertThat(entries.get(1).sequence()).isEqualTo(1);
+                assertThat(entries.get(2).sequence()).isEqualTo(2);
+            }
         }
     }
 
@@ -109,15 +125,17 @@ class LogDbIntegrationTest {
             log.tryAppend(key, "value-2".getBytes(StandardCharsets.UTF_8));
 
             // Read starting from sequence 1
-            List<LogEntry> entries = log.scan(key, 1, 10);
-            assertThat(entries).hasSize(2);
-            assertThat(entries.get(0).sequence()).isEqualTo(1);
-            assertThat(entries.get(1).sequence()).isEqualTo(2);
+            try (LogScanIterator iter = log.scan(key, 1)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(2);
+                assertThat(entries.get(0).sequence()).isEqualTo(1);
+                assertThat(entries.get(1).sequence()).isEqualTo(2);
+            }
         }
     }
 
     @Test
-    void shouldRespectMaxEntries() {
+    void shouldIteratePartiallyAndCloseEarly() {
         try (LogDb log = LogDb.openInMemory()) {
             byte[] key = "limit-key".getBytes(StandardCharsets.UTF_8);
 
@@ -125,20 +143,29 @@ class LogDbIntegrationTest {
                 log.tryAppend(key, ("value-" + i).getBytes(StandardCharsets.UTF_8));
             }
 
-            List<LogEntry> entries = log.scan(key, 0, 3);
-            assertThat(entries).hasSize(3);
+            // Iterate only 3 entries then close early
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    LogEntry entry = iter.next();
+                    assertThat(entry).isNotNull();
+                    entries.add(entry);
+                }
+                assertThat(entries).hasSize(3);
+            }
         }
     }
 
     @Test
-    void shouldReturnEmptyListForUnknownKey() {
+    void shouldReturnEmptyForUnknownKey() {
         try (LogDb log = LogDb.openInMemory()) {
             byte[] key = "known".getBytes(StandardCharsets.UTF_8);
             log.tryAppend(key, "value".getBytes(StandardCharsets.UTF_8));
 
             byte[] unknownKey = "unknown".getBytes(StandardCharsets.UTF_8);
-            List<LogEntry> entries = log.scan(unknownKey, 0, 10);
-            assertThat(entries).isEmpty();
+            try (LogScanIterator iter = log.scan(unknownKey, 0)) {
+                assertThat(iter.next()).isNull();
+            }
         }
     }
 
@@ -152,14 +179,18 @@ class LogDbIntegrationTest {
             log.tryAppend(keyB, "value-b-0".getBytes(StandardCharsets.UTF_8));
             log.tryAppend(keyA, "value-a-1".getBytes(StandardCharsets.UTF_8));
 
-            List<LogEntry> entriesA = log.scan(keyA, 0, 10);
-            assertThat(entriesA).hasSize(2);
-            assertThat(new String(entriesA.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-0");
-            assertThat(new String(entriesA.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-1");
+            try (LogScanIterator iter = log.scan(keyA, 0)) {
+                List<LogEntry> entriesA = collectEntries(iter);
+                assertThat(entriesA).hasSize(2);
+                assertThat(new String(entriesA.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-0");
+                assertThat(new String(entriesA.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-a-1");
+            }
 
-            List<LogEntry> entriesB = log.scan(keyB, 0, 10);
-            assertThat(entriesB).hasSize(1);
-            assertThat(new String(entriesB.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-b-0");
+            try (LogScanIterator iter = log.scan(keyB, 0)) {
+                List<LogEntry> entriesB = collectEntries(iter);
+                assertThat(entriesB).hasSize(1);
+                assertThat(new String(entriesB.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-b-0");
+            }
         }
     }
 
@@ -191,9 +222,11 @@ class LogDbIntegrationTest {
 
             log.tryAppend(key, value);
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(1);
-            assertThat(entries.get(0).value()).isEqualTo(value);
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(entries.get(0).value()).isEqualTo(value);
+            }
         }
     }
 
@@ -208,9 +241,11 @@ class LogDbIntegrationTest {
 
             log.tryAppend(key, largeValue);
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(1);
-            assertThat(entries.get(0).value()).isEqualTo(largeValue);
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(entries.get(0).value()).isEqualTo(largeValue);
+            }
         }
     }
 
@@ -224,12 +259,14 @@ class LogDbIntegrationTest {
             log.tryAppend(key, value);
             long afterAppend = System.currentTimeMillis();
 
-            List<LogEntry> entries = log.scan(key, 0, 10);
-            assertThat(entries).hasSize(1);
-            // Timestamp should be within the append window
-            assertThat(entries.get(0).timestamp())
-                    .isGreaterThanOrEqualTo(beforeAppend)
-                    .isLessThanOrEqualTo(afterAppend);
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(1);
+                // Timestamp should be within the append window
+                assertThat(entries.get(0).timestamp())
+                        .isGreaterThanOrEqualTo(beforeAppend)
+                        .isLessThanOrEqualTo(afterAppend);
+            }
         }
     }
 
@@ -254,15 +291,17 @@ class LogDbIntegrationTest {
 
         // Read with separate LogDbReader
         try (LogDbReader reader = LogDbReader.open(readerConfig)) {
-            List<LogEntry> entries = reader.scan(key, 0, 10);
+            try (LogScanIterator iter = reader.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
 
-            assertThat(entries).hasSize(3);
-            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
-            assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
-            assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
-            assertThat(entries.get(0).sequence()).isEqualTo(0);
-            assertThat(entries.get(1).sequence()).isEqualTo(1);
-            assertThat(entries.get(2).sequence()).isEqualTo(2);
+                assertThat(entries).hasSize(3);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+                assertThat(new String(entries.get(1).value(), StandardCharsets.UTF_8)).isEqualTo("value-1");
+                assertThat(new String(entries.get(2).value(), StandardCharsets.UTF_8)).isEqualTo("value-2");
+                assertThat(entries.get(0).sequence()).isEqualTo(0);
+                assertThat(entries.get(1).sequence()).isEqualTo(1);
+                assertThat(entries.get(2).sequence()).isEqualTo(2);
+            }
         }
     }
 
@@ -285,9 +324,11 @@ class LogDbIntegrationTest {
             // Open reader while writer is still open - this should NOT cause fencing error
             try (LogDbReader reader = LogDbReader.open(readerConfig)) {
                 // Reader can read the data written by writer
-                List<LogEntry> entries = reader.scan(key, 0, 10);
-                assertThat(entries).hasSize(1);
-                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+                try (LogScanIterator iter = reader.scan(key, 0)) {
+                    List<LogEntry> entries = collectEntries(iter);
+                    assertThat(entries).hasSize(1);
+                    assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+                }
 
                 // Writer can still write more data while reader is open
                 writer.tryAppend(key, "value-1".getBytes(StandardCharsets.UTF_8));
@@ -297,8 +338,10 @@ class LogDbIntegrationTest {
             // After reader closes, writer should still work
             writer.tryAppend(key, "value-3".getBytes(StandardCharsets.UTF_8));
 
-            List<LogEntry> finalEntries = writer.scan(key, 0, 10);
-            assertThat(finalEntries).hasSize(4);
+            try (LogScanIterator iter = writer.scan(key, 0)) {
+                List<LogEntry> finalEntries = collectEntries(iter);
+                assertThat(finalEntries).hasSize(4);
+            }
         }
     }
 
@@ -322,9 +365,11 @@ class LogDbIntegrationTest {
 
         // Read with LogDbReader using custom refresh interval
         try (LogDbReader reader = LogDbReader.open(readerConfig)) {
-            List<LogEntry> entries = reader.scan(key, 0, 10);
-            assertThat(entries).hasSize(1);
-            assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+            try (LogScanIterator iter = reader.scan(key, 0)) {
+                List<LogEntry> entries = collectEntries(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+            }
         }
     }
 

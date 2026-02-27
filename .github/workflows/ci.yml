@@ -28,6 +28,12 @@ jobs:
       - name: Checkout opendata-java
         uses: actions/checkout@v4
 
+      - name: Checkout opendata
+        uses: actions/checkout@v4
+        with:
+          repository: opendata-oss/opendata
+          path: ../opendata
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -37,22 +43,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            log/native/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('log/native/Cargo.lock') }}
+            ../opendata/target
+          key: ${{ runner.os }}-cargo-opendata-${{ hashFiles('../opendata/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-opendata-
 
-      - name: Check formatting
-        working-directory: log/native
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        working-directory: log/native
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Build native JNI library
-        working-directory: log/native
-        run: cargo build --release
+      - name: Build opendata-log C library
+        working-directory: ../opendata
+        run: cargo build --release -p opendata-log-c
 
       - name: Set up Java 24
         uses: actions/setup-java@v4

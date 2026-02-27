@@ -4,14 +4,14 @@
 
 ## Project Overview
 
-OpenData Java provides Java bindings for [OpenData](https://github.com/opendata-oss/opendata) systems via JNI. Each binding module contains both Rust JNI glue code and Java interface classes.
+OpenData Java provides Java bindings for [OpenData](https://github.com/opendata-oss/opendata) systems via Panama FFM (Foreign Function & Memory). Each binding module uses jextract to generate Java bindings from C headers exposed by the OpenData native libraries.
 
-**Important**: This project depends on a sibling clone of the `opendata` repository. The Rust JNI code references OpenData crates via relative paths (`../../../opendata/`).
+**Important**: This project depends on a sibling clone of the `opendata` repository. The C library headers are referenced via relative paths (`../../opendata/`).
 
 ### Modules
 
 - **common**: Shared Java utilities, configuration records, and exceptions (`dev.opendata.common` package)
-- **log**: Java bindings for OpenData Log with Rust JNI bridge (`dev.opendata` package)
+- **log**: Java bindings for OpenData Log via Panama FFM (`dev.opendata` package)
 
 ### Directory Structure
 
@@ -23,63 +23,49 @@ opendata-java/
 │       ├── ObjectStoreConfig.java  # Sealed interface: InMemory, Aws, Local
 │       └── OpenDataNativeException.java
 ├── log/
-│   ├── native/
-│   │   ├── Cargo.toml              # Rust JNI crate
-│   │   └── src/lib.rs              # JNI implementation
 │   └── src/main/java/dev/opendata/
 │       ├── LogDb.java              # Main write API
 │       ├── LogDbReader.java        # Read-only API
+│       ├── LogScanIterator.java    # Iterator over scan results
+│       ├── NativeInterop.java      # Panama FFM interop layer
 │       ├── LogDbConfig.java        # Configuration record
 │       └── ...
 ├── build.gradle                    # Gradle multi-module build
 └── settings.gradle
 ```
 
-## JNI Architecture
+## Panama FFM Architecture
 
-### Native Method Pattern
+### jextract Bindings
 
-Java classes declare native methods and load the shared library:
+The `log/build.gradle` uses the `de.infolektuell.jextract` Gradle plugin to generate Java bindings from the C header at `opendata/log/c/include/opendata_log.h`. Generated code lives in the `dev.opendata.ffi` package under the `Native` class.
+
+### NativeInterop Layer
+
+`NativeInterop.java` is the package-private interop layer that wraps the generated FFM bindings:
 
 ```java
-public class LogDb implements AutoCloseable {
-    static {
-        System.loadLibrary("opendata_log_jni");
-    }
-
-    private static native long nativeCreate(LogDbConfig config);
-    private static native void nativeClose(long handle);
+// Handle-based resource management with AtomicBoolean for thread safety
+static abstract class NativeHandle implements AutoCloseable {
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile MemorySegment segment;
+    // ...
 }
+
+// Concrete handles: LogHandle, ReaderHandle, IteratorHandle, ObjectStoreHandle
 ```
 
-Rust implements JNI functions following the naming convention `Java_<package>_<class>_<method>`:
+### Error Handling
 
-```rust
-#[no_mangle]
-pub extern "system" fn Java_dev_opendata_LogDb_nativeCreate(
-    mut env: JNIEnv,
-    _class: JClass,
-    config: JObject,
-) -> jlong { ... }
-```
+Every C API call returns `opendata_log_result_t`. The `checkResult()` method inspects the error kind and throws the appropriate Java exception:
 
-### Handle-Based Resource Management
-
-- Native resources are represented as `long` handles in Java
-- Rust stores actual objects (e.g., `LogDb`, Tokio runtime) behind the handle
-- Java classes implement `AutoCloseable` to ensure cleanup via `nativeClose`
-
-### Async Bridge
-
-The Rust JNI layer bridges synchronous JNI calls to async OpenData operations:
-
-- Uses two Tokio runtimes: one for user operations, one for SlateDB compaction (prevents deadlock)
-- JNI methods call `runtime.block_on(async_operation)` to wait for results
-- Error handling converts Rust errors to `OpenDataNativeException`
+- `QUEUE_FULL` → `QueueFullException`
+- `TIMEOUT` → `AppendTimeoutException`
+- All others → `OpenDataNativeException`
 
 ### Timestamp Header
 
-The JNI layer prepends an 8-byte timestamp to values for latency measurement:
+The Java layer prepends an 8-byte timestamp to values for latency measurement:
 
 ```
 ┌─────────────────────┬──────────────────────┐
@@ -92,44 +78,30 @@ The JNI layer prepends an 8-byte timestamp to values for latency measurement:
 
 ### Prerequisites
 
-- Rust stable toolchain
+- Rust stable toolchain (for building the C library)
 - Java 24+
 - Sibling clone of `opendata` repository
 
 ### Building
 
 ```bash
-# Build native JNI library
-cd log/native
+# Build the C library
+cd ../opendata/log/c
 cargo build --release
 
-# Build Java modules
-cd ../..
+# Build Java modules (generates FFM bindings via jextract)
+cd ../../../opendata-java
 ./gradlew build
 ```
 
 ### Testing
 
 ```bash
-# Rust tests
-cd log/native
-cargo test
-
-# Java tests (requires native library)
+# Java tests (requires C library built)
 ./gradlew test
-```
 
-### Formatting and Linting
-
-Always run before committing:
-
-```bash
-# Rust
-cd log/native
-cargo fmt
-cargo clippy --all-targets -- -D warnings
-
-# Java uses standard conventions (4-space indent)
+# Log integration tests specifically
+./gradlew :log:test --tests "dev.opendata.*"
 ```
 
 ## Code Conventions
@@ -145,52 +117,28 @@ public sealed interface StorageConfig {
 }
 ```
 
-The Rust JNI layer extracts these via reflection (`instanceof` checks and field access).
-
 ### Tests
 
-Use the **given/when/then** pattern with `should_` naming:
+Use the **given/when/then** pattern with `should` naming:
 
-**Rust:**
-```rust
-#[test]
-fn should_extract_config_fields() {
-    // given
-    let config = create_test_config();
-
-    // when
-    let result = extract_fields(&config);
-
-    // then
-    assert!(result.is_ok());
-}
-```
-
-**Java:**
 ```java
 @Test
 void shouldAppendAndScanEntries() {
-    // given
-    var config = new LogDbConfig(new StorageConfig.InMemory(), null);
+    try (LogDb log = LogDb.openInMemory()) {
+        log.tryAppend(key, value);
 
-    // when
-    try (var log = LogDb.create(config)) {
-        log.append("key".getBytes(), "value".getBytes());
+        try (LogScanIterator iter = log.scan(key, 0)) {
+            // assertions...
+        }
     }
-
-    // then
-    // assertions...
 }
 ```
 
 ### Error Handling
 
-- Rust JNI code should return errors via exceptions, not panics
 - Use `OpenDataNativeException` for all native errors
-- Document any overhead in `lib.rs` header comments
+- Specific subclasses for recoverable errors (QueueFullException, AppendTimeoutException)
 
 ### Imports
-
-Rust: Place all `use` statements at module level, not inside functions.
 
 Java: Standard import ordering (java.*, external, project).

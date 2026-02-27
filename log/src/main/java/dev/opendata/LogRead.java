@@ -1,7 +1,5 @@
 package dev.opendata;
 
-import java.util.List;
-
 /**
  * Interface for read operations on the log.
  *
@@ -19,13 +17,12 @@ public interface LogRead {
     /**
      * Scans entries from the log for the given key starting at a sequence number.
      *
-     * <p>Returns immediately with available entries, which may be fewer than requested
-     * or empty if no new entries are available.
+     * <p>Returns an iterator over available entries. The caller must close the
+     * iterator when done to release native resources.
      *
      * @param key           the key to scan
      * @param startSequence the sequence number to start scanning from
-     * @param maxEntries    maximum number of entries to return
-     * @return list of log entries (may be empty)
+     * @return an iterator over log entries (caller must close)
      */
-    List<LogEntry> scan(byte[] key, long startSequence, int maxEntries);
+    LogScanIterator scan(byte[] key, long startSequence);
 }

@@ -84,6 +84,20 @@ public class LogDb implements Closeable, LogRead {
     }
 
     /**
+     * Appends a pre-built {@link RecordBatch} without blocking for queue space.
+     *
+     * <p>The batch is not closed by this method — the caller retains ownership.
+     *
+     * @param batch the record batch to append
+     * @return the result of the append operation (sequence of first record)
+     * @throws QueueFullException if the write queue is full
+     */
+    public AppendResult tryAppend(RecordBatch batch) {
+        checkNotClosed();
+        return NativeInterop.logTryAppend(handle, batch);
+    }
+
+    /**
      * Appends a single record without blocking for queue space.
      *
      * <p>Convenience method for single-record appends. For better throughput,
@@ -117,6 +131,22 @@ public class LogDb implements Closeable, LogRead {
     }
 
     /**
+     * Appends a pre-built {@link RecordBatch}, blocking up to {@code timeoutMs} for queue space.
+     *
+     * <p>The batch is not closed by this method — the caller retains ownership.
+     *
+     * @param batch     the record batch to append
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return the result of the append operation (sequence of first record)
+     * @throws AppendTimeoutException if the timeout expires before queue space is available
+     * @throws QueueFullException     if the write queue is full (unlikely with timeout)
+     */
+    public AppendResult appendTimeout(RecordBatch batch, long timeoutMs) {
+        checkNotClosed();
+        return NativeInterop.logAppendTimeout(handle, batch, timeoutMs);
+    }
+
+    /**
      * Appends a single record, blocking up to {@code timeoutMs} for queue space.
      *
      * @param key       the key to append under
@@ -131,9 +161,9 @@ public class LogDb implements Closeable, LogRead {
     }
 
     @Override
-    public LogScanIterator scan(byte[] key, long startSequence) {
+    public LogScanRawIterator scanRaw(byte[] key, long startSequence) {
         checkNotClosed();
-        return new LogScanIterator(NativeInterop.logScan(handle, key, startSequence));
+        return new LogScanRawIterator(NativeInterop.logScan(handle, key, startSequence));
     }
 
     /**

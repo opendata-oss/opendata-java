@@ -143,7 +143,11 @@ final class NativeInterop {
     // Iterator result
     // =========================================================================
 
-    record IteratorNextResult(boolean present, long sequence, byte[] key, byte[] value, long timestamp) {
+    record RawIteratorResult(
+            boolean present, long sequence, long timestamp,
+            MemorySegment keyPtr, long keyLen,
+            MemorySegment valuePtr, long valueLen
+    ) {
     }
 
     // =========================================================================
@@ -209,8 +213,18 @@ final class NativeInterop {
                 Native.opendata_log_try_append(arena, seg, keys, keyLens, vals, valLens, count, outSeq));
     }
 
+    static AppendResult logTryAppend(LogHandle handle, RecordBatch batch) {
+        return doAppendBatch(handle.segment(), batch, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
+                Native.opendata_log_try_append(arena, seg, keys, keyLens, vals, valLens, count, outSeq));
+    }
+
     static AppendResult logAppendTimeout(LogHandle handle, Record[] records, long timeoutMs) {
         return doAppend(handle.segment(), records, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
+                Native.opendata_log_append_timeout(arena, seg, keys, keyLens, vals, valLens, count, timeoutMs, outSeq));
+    }
+
+    static AppendResult logAppendTimeout(LogHandle handle, RecordBatch batch, long timeoutMs) {
+        return doAppendBatch(handle.segment(), batch, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
                 Native.opendata_log_append_timeout(arena, seg, keys, keyLens, vals, valLens, count, timeoutMs, outSeq));
     }
 
@@ -247,7 +261,7 @@ final class NativeInterop {
     // Iterator operations
     // =========================================================================
 
-    static IteratorNextResult iteratorNext(IteratorHandle handle) {
+    static RawIteratorResult iteratorNextRaw(IteratorHandle handle) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment outPresent = arena.allocate(ValueLayout.JAVA_BOOLEAN);
             MemorySegment outKey = arena.allocate(Native.C_POINTER);
@@ -261,41 +275,32 @@ final class NativeInterop {
 
             boolean present = outPresent.get(ValueLayout.JAVA_BOOLEAN, 0);
             if (!present) {
-                return new IteratorNextResult(false, 0, null, null, 0);
+                return new RawIteratorResult(false, 0, 0,
+                        MemorySegment.NULL, 0, MemorySegment.NULL, 0);
             }
 
             long sequence = outSequence.get(ValueLayout.JAVA_LONG, 0);
-            byte[] key = copyAndFreeBytes(
-                    outKey.get(Native.C_POINTER, 0),
-                    outKeyLen.get(Native.C_LONG, 0));
-
+            MemorySegment keyPtr = outKey.get(Native.C_POINTER, 0);
+            long keyLen = outKeyLen.get(Native.C_LONG, 0);
             MemorySegment valuePtr = outValue.get(Native.C_POINTER, 0);
             long valueLen = outValueLen.get(Native.C_LONG, 0);
 
-            // Read timestamp directly from native memory, then copy only the payload
-            long timestamp;
-            byte[] value;
-            try {
+            // Extract timestamp from the value segment header
+            long timestamp = 0;
+            if (valueLen >= TIMESTAMP_HEADER_SIZE) {
                 MemorySegment valueSeg = valuePtr.reinterpret(valueLen);
-                if (valueLen >= TIMESTAMP_HEADER_SIZE) {
-                    timestamp = Long.reverseBytes(
-                            valueSeg.get(ValueLayout.JAVA_LONG_UNALIGNED, 0));
-                    long payloadLen = valueLen - TIMESTAMP_HEADER_SIZE;
-                    value = payloadLen > 0
-                            ? valueSeg.asSlice(TIMESTAMP_HEADER_SIZE, payloadLen)
-                                    .toArray(ValueLayout.JAVA_BYTE)
-                            : new byte[0];
-                } else {
-                    timestamp = 0;
-                    value = valueLen > 0
-                            ? valueSeg.toArray(ValueLayout.JAVA_BYTE)
-                            : new byte[0];
-                }
-            } finally {
-                Native.opendata_log_bytes_free(valuePtr, valueLen);
+                timestamp = Long.reverseBytes(
+                        valueSeg.get(ValueLayout.JAVA_LONG_UNALIGNED, 0));
             }
 
-            return new IteratorNextResult(true, sequence, key, value, timestamp);
+            return new RawIteratorResult(true, sequence, timestamp,
+                    keyPtr, keyLen, valuePtr, valueLen);
+        }
+    }
+
+    static void freeBytes(MemorySegment ptr, long len) {
+        if (!ptr.equals(MemorySegment.NULL) && len > 0) {
+            Native.opendata_log_bytes_free(ptr, len);
         }
     }
 
@@ -327,6 +332,42 @@ final class NativeInterop {
 
             long startSeq = outSeq.get(ValueLayout.JAVA_LONG, 0);
             return new AppendResult(startSeq, records[0].timestampMs());
+        }
+    }
+
+    private static AppendResult doAppendBatch(MemorySegment handle, RecordBatch batch, AppendCall call) {
+        int count = batch.count();
+        if (count == 0) {
+            throw new IllegalArgumentException("batch must not be empty");
+        }
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment nativeKeys = arena.allocate(Native.C_POINTER, count);
+            MemorySegment keyLens = arena.allocate(Native.C_LONG, count);
+            MemorySegment nativeValues = arena.allocate(Native.C_POINTER, count);
+            MemorySegment valueLens = arena.allocate(Native.C_LONG, count);
+
+            long[] batchKeyOffsets = batch.keyOffsets();
+            long[] batchKeyLengths = batch.keyLengths();
+            long[] batchValueOffsets = batch.valueOffsets();
+            long[] batchValueLengths = batch.valueLengths();
+            MemorySegment batchKeysData = batch.keysData();
+            MemorySegment batchValuesData = batch.valuesData();
+
+            for (int i = 0; i < count; i++) {
+                nativeKeys.setAtIndex(Native.C_POINTER, i,
+                        batchKeysData.asSlice(batchKeyOffsets[i], batchKeyLengths[i]));
+                keyLens.setAtIndex(Native.C_LONG, i, batchKeyLengths[i]);
+                nativeValues.setAtIndex(Native.C_POINTER, i,
+                        batchValuesData.asSlice(batchValueOffsets[i], batchValueLengths[i]));
+                valueLens.setAtIndex(Native.C_LONG, i, batchValueLengths[i]);
+            }
+
+            MemorySegment outSeq = arena.allocate(ValueLayout.JAVA_LONG);
+            checkResult(call.invoke(arena, handle,
+                    nativeKeys, keyLens, nativeValues, valueLens, count, outSeq));
+
+            long startSeq = outSeq.get(ValueLayout.JAVA_LONG, 0);
+            return new AppendResult(startSeq, batch.firstTimestampMs());
         }
     }
 
@@ -378,23 +419,6 @@ final class NativeInterop {
             return MemorySegment.NULL;
         }
         return marshalCString(arena, value);
-    }
-
-    private static byte[] copyAndFreeBytes(MemorySegment dataPtr, long len) {
-        if (dataPtr.equals(MemorySegment.NULL)) {
-            if (len == 0) {
-                return new byte[0];
-            }
-            throw new IllegalStateException("native byte pointer is null but len is " + len);
-        }
-        if (len == 0) {
-            return new byte[0];
-        }
-        try {
-            return dataPtr.reinterpret(len).toArray(ValueLayout.JAVA_BYTE);
-        } finally {
-            Native.opendata_log_bytes_free(dataPtr, len);
-        }
     }
 
     private static void marshalRecords(Arena arena, Record[] records,
@@ -464,7 +488,11 @@ final class NativeInterop {
             Native.opendata_log_result_free(result);
         }
 
-        throw switch (kindCode) {
+        throw mapError(kindCode, message);
+    }
+
+    static RuntimeException mapError(int kindCode, String message) {
+        return switch (kindCode) {
             case 5 -> new QueueFullException(message);   // OPENDATA_LOG_ERROR_QUEUE_FULL
             case 6 -> new AppendTimeoutException(message); // OPENDATA_LOG_ERROR_TIMEOUT
             default -> new OpenDataNativeException(message);

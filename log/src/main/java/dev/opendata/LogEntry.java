@@ -1,12 +1,10 @@
 package dev.opendata;
 
 /**
- * A single entry read from the log.
+ * An immutable log entry with heap-owned key and value data.
  *
- * @param sequence  the sequence number of this entry
- * @param timestamp the timestamp (epoch millis) when this entry was appended
- * @param key       the key this entry was appended under
- * @param value     the value of this entry
+ * <p>Unlike {@link LogEntryView}, the key and value arrays are safe to retain
+ * indefinitely. Instances are produced by {@link LogScanCopyIterator}.
  */
 public record LogEntry(long sequence, long timestamp, byte[] key, byte[] value) {
 }

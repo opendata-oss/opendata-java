@@ -1,50 +1,75 @@
 package dev.opendata;
 
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+
 /**
- * An iterator over log scan results.
+ * A copying iterator over log scan results.
  *
- * <p>Wraps a native iterator handle and returns {@link LogEntry} instances
- * one at a time. Must be closed when done to release native resources.
+ * <p>Wraps a {@link LogScanRawIterator} and copies each entry's key and value to
+ * heap-owned {@code byte[]} arrays, producing {@link LogEntry} records that are
+ * safe to retain after the iterator advances.
+ *
+ * <p>Implements {@link Iterator} for use with for-each loops and streams, and
+ * {@link AutoCloseable} to release the underlying native iterator.
  *
  * <p>Usage:
  * <pre>{@code
  * try (LogScanIterator iter = log.scan(key, 0)) {
- *     LogEntry entry;
- *     while ((entry = iter.next()) != null) {
- *         process(entry);
+ *     for (LogEntry entry : iter) {
+ *         process(entry.key(), entry.value());
  *     }
  * }
  * }</pre>
  */
-public final class LogScanIterator implements AutoCloseable {
+public final class LogScanIterator implements Iterator<LogEntry>, AutoCloseable, Iterable<LogEntry> {
 
-    private NativeInterop.IteratorHandle handle;
-    private boolean closed;
+    private final LogScanRawIterator inner;
+    private LogEntry prefetched;
+    private boolean done;
 
-    LogScanIterator(NativeInterop.IteratorHandle handle) {
-        this.handle = handle;
+    LogScanIterator(LogScanRawIterator inner) {
+        this.inner = inner;
     }
 
-    /**
-     * Returns the next log entry, or {@code null} when the iterator is exhausted.
-     *
-     * @return the next entry, or null if no more entries
-     */
-    public LogEntry next() {
-        NativeInterop.IteratorNextResult result = NativeInterop.iteratorNext(handle);
-        if (!result.present()) {
-            return null;
+    @Override
+    public boolean hasNext() {
+        if (prefetched != null) {
+            return true;
         }
-        return new LogEntry(result.sequence(), result.timestamp(), result.key(), result.value());
+        if (done) {
+            return false;
+        }
+        LogEntryView view = inner.next();
+        if (view == null) {
+            done = true;
+            return false;
+        }
+        prefetched = new LogEntry(
+                view.sequence(),
+                view.timestamp(),
+                view.key().toArray(),
+                view.value().toArray());
+        return true;
+    }
+
+    @Override
+    public LogEntry next() {
+        if (!hasNext()) {
+            throw new NoSuchElementException();
+        }
+        LogEntry entry = prefetched;
+        prefetched = null;
+        return entry;
+    }
+
+    @Override
+    public Iterator<LogEntry> iterator() {
+        return this;
     }
 
     @Override
     public void close() {
-        if (closed) {
-            return;
-        }
-        handle.close();
-        handle = null;
-        closed = true;
+        inner.close();
     }
 }

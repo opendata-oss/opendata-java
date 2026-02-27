@@ -23,8 +23,7 @@ import java.io.Closeable;
  * LogDbReaderConfig config = new LogDbReaderConfig(new StorageConfig.SlateDb(...));
  * try (LogDbReader reader = LogDbReader.open(config)) {
  *     try (LogScanIterator iter = reader.scan(key, 0)) {
- *         LogEntry entry;
- *         while ((entry = iter.next()) != null) {
+ *         for (LogEntry entry : iter) {
  *             process(entry);
  *         }
  *     }
@@ -78,11 +77,11 @@ public class LogDbReader implements Closeable, LogRead {
     }
 
     @Override
-    public LogScanIterator scan(byte[] key, long startSequence) {
+    public LogScanRawIterator scanRaw(byte[] key, long startSequence) {
         if (handle.isClosed()) {
             throw new IllegalStateException("LogDbReader is closed");
         }
-        return new LogScanIterator(NativeInterop.readerScan(handle, key, startSequence));
+        return new LogScanRawIterator(NativeInterop.readerScan(handle, key, startSequence));
     }
 
     @Override

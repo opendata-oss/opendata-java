@@ -29,10 +29,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checkout opendata
-        uses: actions/checkout@v4
-        with:
-          repository: opendata-oss/opendata
-          path: ../opendata
+        run: git clone --depth 1 https://github.com/opendata-oss/opendata.git ../opendata
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

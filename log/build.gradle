@@ -1,0 +1,8 @@
+dependencies {
+    implementation project(':common')
+}
+
+test {
+    jvmArgs "-Djava.library.path=${project.projectDir}/native/target/release"
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}

@@ -31,7 +31,8 @@ opendata-java/
 │       ├── LogDbReader.java        # Read-only API
 │       ├── LogDbConfig.java        # Configuration record
 │       └── ...
-└── pom.xml                         # Maven multi-module build
+├── build.gradle                    # Gradle multi-module build
+└── settings.gradle
 ```
 
 ## JNI Architecture
@@ -92,8 +93,7 @@ The JNI layer prepends an 8-byte timestamp to values for latency measurement:
 ### Prerequisites
 
 - Rust stable toolchain
-- Java 17+
-- Maven 3.8+
+- Java 24+
 - Sibling clone of `opendata` repository
 
 ### Building
@@ -103,9 +103,9 @@ The JNI layer prepends an 8-byte timestamp to values for latency measurement:
 cd log/native
 cargo build --release
 
-# Build and install Java modules
+# Build Java modules
 cd ../..
-mvn clean install
+./gradlew build
 ```
 
 ### Testing
@@ -116,7 +116,7 @@ cd log/native
 cargo test
 
 # Java tests (requires native library)
-mvn test -Djava.library.path=log/native/target/release
+./gradlew test
 ```
 
 ### Formatting and Linting

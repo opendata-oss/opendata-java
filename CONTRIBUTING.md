@@ -50,8 +50,7 @@ Open an issue describing:
 ### Prerequisites
 
 - Rust stable toolchain ([rustup](https://rustup.rs/))
-- Java 17+ ([SDKMAN](https://sdkman.io/) recommended)
-- Maven 3.8+
+- Java 24+ ([SDKMAN](https://sdkman.io/) recommended)
 - Git
 - Local clone of [opendata](https://github.com/opendata-oss/opendata) as sibling directory
 
@@ -72,7 +71,7 @@ cargo build --release
 
 # Build Java modules
 cd ../..
-mvn clean install -DskipTests
+./gradlew build
 ```
 
 ## Code Style
@@ -154,7 +153,7 @@ cd log/native
 cargo test
 
 # Java tests (requires native library built)
-mvn test -Djava.library.path=log/native/target/release
+./gradlew test
 ```
 
 ## Pull Request Process

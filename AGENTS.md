@@ -26,7 +26,10 @@ opendata-java/
 │   └── src/main/java/dev/opendata/
 │       ├── LogDb.java              # Main write API
 │       ├── LogDbReader.java        # Read-only API
-│       ├── LogScanIterator.java    # Iterator over scan results
+│       ├── RecordBatch.java        # Zero-copy batch builder for writes
+│       ├── Record.java             # Single record (key + value + timestamp)
+│       ├── LogScanIterator.java    # Heap-copying iterator over scan results
+│       ├── LogScanRawIterator.java # Zero-copy iterator (native memory views)
 │       ├── NativeInterop.java      # Panama FFM interop layer
 │       ├── LogDbConfig.java        # Configuration record
 │       └── ...
@@ -62,6 +65,13 @@ Every C API call returns `opendata_log_result_t`. The `checkResult()` method ins
 - `QUEUE_FULL` → `QueueFullException`
 - `TIMEOUT` → `AppendTimeoutException`
 - All others → `OpenDataNativeException`
+
+### Write Paths
+
+There are two write paths through `NativeInterop`:
+
+- **`Record[]`** — `doAppend()` copies each record's `byte[] key` and `byte[] value` into arena-allocated segments at append time. Simple but involves per-record allocation.
+- **`RecordBatch`** — `doAppendBatch()` slices into the batch's pre-built contiguous segments (zero-copy pointer building). The batch builder (`RecordBatch`) accumulates records into two contiguous `MemorySegment`s (keys and values) with timestamp headers already prepended, so the append path only needs to build the pointer arrays.
 
 ### Timestamp Header
 

@@ -34,6 +34,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Compute opendata cache key
+        id: opendata-hash
+        run: echo "cargo-lock-hash=$(sha256sum ../opendata/Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -41,7 +45,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ../opendata/target
-          key: ${{ runner.os }}-cargo-opendata-${{ hashFiles('../opendata/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-opendata-${{ steps.opendata-hash.outputs.cargo-lock-hash }}
           restore-keys: |
             ${{ runner.os }}-cargo-opendata-
 

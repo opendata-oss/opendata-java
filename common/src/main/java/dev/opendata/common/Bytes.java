@@ -15,7 +15,7 @@ import java.lang.foreign.ValueLayout;
  */
 public final class Bytes {
 
-    private MemorySegment segment;
+    private volatile MemorySegment segment;
 
     /**
      * Creates a new Bytes wrapping the given segment.

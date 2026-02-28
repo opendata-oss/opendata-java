@@ -1,7 +1,6 @@
 package dev.opendata;
 
 import dev.opendata.common.AppendTimeoutException;
-import dev.opendata.common.ObjectStoreConfig;
 import dev.opendata.common.QueueFullException;
 import dev.opendata.common.StorageConfig;
 
@@ -50,7 +49,7 @@ public class LogDb implements Closeable, LogRead {
                 }
             }
             case StorageConfig.SlateDb slateDb -> {
-                try (NativeInterop.ObjectStoreHandle objectStore = resolveObjectStore(slateDb.objectStore())) {
+                try (NativeInterop.ObjectStoreHandle objectStore = NativeInterop.resolveObjectStore(slateDb.objectStore())) {
                     NativeInterop.LogHandle logHandle = NativeInterop.logOpen(
                             1, slateDb.path(), objectStore.segment(), slateDb.settingsPath(), sealIntervalMs);
                     return new LogDb(logHandle);
@@ -187,13 +186,5 @@ public class LogDb implements Closeable, LogRead {
         if (handle.isClosed()) {
             throw new IllegalStateException("LogDb is closed");
         }
-    }
-
-    static NativeInterop.ObjectStoreHandle resolveObjectStore(ObjectStoreConfig config) {
-        return switch (config) {
-            case ObjectStoreConfig.InMemory() -> NativeInterop.objectStoreInMemory();
-            case ObjectStoreConfig.Aws aws -> NativeInterop.objectStoreAws(aws.region(), aws.bucket());
-            case ObjectStoreConfig.Local local -> NativeInterop.objectStoreLocal(local.path());
-        };
     }
 }

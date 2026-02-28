@@ -13,6 +13,9 @@ import java.util.NoSuchElementException;
  * <p>Implements {@link Iterator} for use with for-each loops and streams, and
  * {@link AutoCloseable} to release the underlying native iterator.
  *
+ * <p><b>Note:</b> This is a single-use {@link Iterable} — {@link #iterator()} returns
+ * {@code this}, so the iterator can only be traversed once.
+ *
  * <p>Usage:
  * <pre>{@code
  * try (LogScanIterator iter = log.scan(key, 0)) {

@@ -67,7 +67,7 @@ public class LogDbReader implements Closeable, LogRead {
                 }
             }
             case StorageConfig.SlateDb slateDb -> {
-                try (NativeInterop.ObjectStoreHandle objectStore = LogDb.resolveObjectStore(slateDb.objectStore())) {
+                try (NativeInterop.ObjectStoreHandle objectStore = NativeInterop.resolveObjectStore(slateDb.objectStore())) {
                     NativeInterop.ReaderHandle readerHandle = NativeInterop.readerOpen(
                             1, slateDb.path(), objectStore.segment(), slateDb.settingsPath(), refreshIntervalMs);
                     return new LogDbReader(readerHandle);

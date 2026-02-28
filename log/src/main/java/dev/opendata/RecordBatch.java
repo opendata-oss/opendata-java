@@ -28,7 +28,6 @@ import java.util.Objects;
  */
 public final class RecordBatch implements AutoCloseable {
 
-    private static final int TIMESTAMP_HEADER_SIZE = 8;
     private static final long DEFAULT_DATA_CAPACITY = 4096;
     private static final int DEFAULT_RECORD_CAPACITY = 64;
 
@@ -118,13 +117,13 @@ public final class RecordBatch implements AutoCloseable {
         keysOffset += keyLen;
 
         // Copy timestamp header + value into values segment
-        long totalValueLen = TIMESTAMP_HEADER_SIZE + value.length;
+        long totalValueLen = NativeInterop.TIMESTAMP_HEADER_SIZE + value.length;
         valuesData = ensureCapacity(valuesData, valuesOffset, totalValueLen);
         valuesData.set(ValueLayout.JAVA_LONG_UNALIGNED, valuesOffset,
                 Long.reverseBytes(timestampMs));
         if (value.length > 0) {
             MemorySegment.copy(MemorySegment.ofArray(value), 0,
-                    valuesData, valuesOffset + TIMESTAMP_HEADER_SIZE, value.length);
+                    valuesData, valuesOffset + NativeInterop.TIMESTAMP_HEADER_SIZE, value.length);
         }
         valueOffsets[count] = valuesOffset;
         valueLengths[count] = totalValueLen;

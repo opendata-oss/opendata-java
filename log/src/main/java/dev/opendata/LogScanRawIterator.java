@@ -30,8 +30,6 @@ import java.lang.foreign.MemorySegment;
  */
 public final class LogScanRawIterator implements AutoCloseable {
 
-    private static final int TIMESTAMP_HEADER_SIZE = 8;
-
     private NativeInterop.IteratorHandle handle;
     private boolean closed;
 
@@ -55,6 +53,9 @@ public final class LogScanRawIterator implements AutoCloseable {
      * @return the next entry view, or null if no more entries
      */
     public LogEntryView next() {
+        if (closed) {
+            throw new IllegalStateException("Iterator is closed");
+        }
         freePending();
         invalidateCurrent();
 
@@ -69,11 +70,11 @@ public final class LogScanRawIterator implements AutoCloseable {
         // Wrap value payload (after timestamp header) as read-only Bytes
         Bytes value;
         long valueLen = raw.valueLen();
-        if (valueLen >= TIMESTAMP_HEADER_SIZE) {
-            long payloadLen = valueLen - TIMESTAMP_HEADER_SIZE;
+        if (valueLen >= NativeInterop.TIMESTAMP_HEADER_SIZE) {
+            long payloadLen = valueLen - NativeInterop.TIMESTAMP_HEADER_SIZE;
             if (payloadLen > 0) {
                 value = new Bytes(raw.valuePtr().reinterpret(valueLen)
-                        .asSlice(TIMESTAMP_HEADER_SIZE, payloadLen).asReadOnly());
+                        .asSlice(NativeInterop.TIMESTAMP_HEADER_SIZE, payloadLen).asReadOnly());
             } else {
                 value = new Bytes(MemorySegment.ofArray(new byte[0]));
             }

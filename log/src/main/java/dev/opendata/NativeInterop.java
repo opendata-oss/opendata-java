@@ -17,6 +17,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import dev.opendata.common.ObjectStoreConfig;
+
 /**
  * Panama FFM interop layer for the opendata-log C library.
  *
@@ -39,7 +41,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class NativeInterop {
 
-    private static final int TIMESTAMP_HEADER_SIZE = 8;
+    static final int TIMESTAMP_HEADER_SIZE = 8;
+
+    // Result kind codes from the C API (opendata_log_result_t.kind)
+    private static final int OPENDATA_LOG_OK = 0;
+    private static final int OPENDATA_LOG_ERROR_QUEUE_FULL = 5;
+    private static final int OPENDATA_LOG_ERROR_TIMEOUT = 6;
 
     private NativeInterop() {
     }
@@ -179,6 +186,14 @@ final class NativeInterop {
             checkResult(Native.opendata_log_object_store_aws(arena, nativeRegion, nativeBucket, outStore));
             return new ObjectStoreHandle(outStore.get(Native.C_POINTER, 0));
         }
+    }
+
+    static ObjectStoreHandle resolveObjectStore(ObjectStoreConfig config) {
+        return switch (config) {
+            case ObjectStoreConfig.InMemory() -> objectStoreInMemory();
+            case ObjectStoreConfig.Aws aws -> objectStoreAws(aws.region(), aws.bucket());
+            case ObjectStoreConfig.Local local -> objectStoreLocal(local.path());
+        };
     }
 
     // =========================================================================
@@ -471,7 +486,7 @@ final class NativeInterop {
     private static void checkResult(MemorySegment result) {
         int kindCode = opendata_log_result_t.kind(result);
 
-        if (kindCode == 0) { // OPENDATA_LOG_OK
+        if (kindCode == OPENDATA_LOG_OK) {
             Native.opendata_log_result_free(result);
             return;
         }
@@ -492,10 +507,12 @@ final class NativeInterop {
     }
 
     static RuntimeException mapError(int kindCode, String message) {
-        return switch (kindCode) {
-            case 5 -> new QueueFullException(message);   // OPENDATA_LOG_ERROR_QUEUE_FULL
-            case 6 -> new AppendTimeoutException(message); // OPENDATA_LOG_ERROR_TIMEOUT
-            default -> new OpenDataNativeException(message);
-        };
+        if (kindCode == OPENDATA_LOG_ERROR_QUEUE_FULL) {
+            return new QueueFullException(message);
+        } else if (kindCode == OPENDATA_LOG_ERROR_TIMEOUT) {
+            return new AppendTimeoutException(message);
+        } else {
+            return new OpenDataNativeException(message);
+        }
     }
 }

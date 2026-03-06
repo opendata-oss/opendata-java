@@ -6,7 +6,9 @@ import dev.opendata.common.Bytes;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -656,6 +658,68 @@ class LogDbIntegrationTest {
                 assertThat(entries.get(1).sequence()).isEqualTo(1);
                 assertThat(entries.get(2).sequence()).isEqualTo(2);
                 assertThat(entries.get(3).sequence()).isEqualTo(3);
+            }
+        }
+    }
+
+    @Test
+    void shouldNotSeeUnflushedWritesWithRemoteVisibility(@TempDir Path tempDir) throws IOException {
+        // Use a long flush_interval so SlateDB won't auto-flush during the test
+        Path settingsFile = tempDir.resolve("slatedb.toml");
+        Files.writeString(settingsFile, "flush_interval = \"1h\"\n");
+
+        var storage = new StorageConfig.SlateDb(
+                "visibility-remote-test",
+                new ObjectStoreConfig.Local(tempDir.toString()),
+                settingsFile.toString()
+        );
+        var config = new LogDbConfig(storage, SegmentConfig.DEFAULT, ReadVisibility.REMOTE);
+
+        byte[] key = "remote-vis-key".getBytes(StandardCharsets.UTF_8);
+
+        try (LogDb log = LogDb.open(config)) {
+            log.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
+
+            // Data is written but not yet durable — should not be visible
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collect(iter);
+                assertThat(entries).isEmpty();
+            }
+
+            // Flush makes data durable — should now be visible
+            log.flush();
+
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collect(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
+            }
+        }
+    }
+
+    @Test
+    void shouldSeeUnflushedWritesWithMemoryVisibility(@TempDir Path tempDir) throws IOException {
+        // Use a long flush_interval so SlateDB won't auto-flush during the test
+        Path settingsFile = tempDir.resolve("slatedb.toml");
+        Files.writeString(settingsFile, "flush_interval = \"1h\"\n");
+
+        var storage = new StorageConfig.SlateDb(
+                "visibility-memory-test",
+                new ObjectStoreConfig.Local(tempDir.toString()),
+                settingsFile.toString()
+        );
+        var config = new LogDbConfig(storage, SegmentConfig.DEFAULT, ReadVisibility.MEMORY);
+
+        byte[] key = "memory-vis-key".getBytes(StandardCharsets.UTF_8);
+
+        try (LogDb log = LogDb.open(config)) {
+            log.tryAppend(key, "value-0".getBytes(StandardCharsets.UTF_8));
+
+            // Data is written to memory — should be visible even without flush
+            try (LogScanIterator iter = log.scan(key, 0)) {
+                List<LogEntry> entries = collect(iter);
+                assertThat(entries).hasSize(1);
+                assertThat(new String(entries.get(0).value(), StandardCharsets.UTF_8)).isEqualTo("value-0");
             }
         }
     }

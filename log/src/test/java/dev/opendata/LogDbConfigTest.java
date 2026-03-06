@@ -18,16 +18,30 @@ class LogDbConfigTest {
 
         assertThat(config.storage()).isEqualTo(storage);
         assertThat(config.segmentation()).isEqualTo(segmentation);
+        assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
     }
 
     @Test
-    void shouldCreateWithStorageOnlyUsingDefaultSegmentation() {
+    void shouldCreateWithAllParameters() {
+        var storage = new StorageConfig.InMemory();
+        var segmentation = SegmentConfig.withSealInterval(3600_000);
+
+        var config = new LogDbConfig(storage, segmentation, ReadVisibility.REMOTE);
+
+        assertThat(config.storage()).isEqualTo(storage);
+        assertThat(config.segmentation()).isEqualTo(segmentation);
+        assertThat(config.readVisibility()).isEqualTo(ReadVisibility.REMOTE);
+    }
+
+    @Test
+    void shouldCreateWithStorageOnlyUsingDefaults() {
         var storage = new StorageConfig.InMemory();
 
         var config = new LogDbConfig(storage);
 
         assertThat(config.storage()).isEqualTo(storage);
         assertThat(config.segmentation()).isEqualTo(SegmentConfig.DEFAULT);
+        assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
     }
 
     @Test
@@ -36,6 +50,7 @@ class LogDbConfigTest {
 
         assertThat(config.storage()).isInstanceOf(StorageConfig.InMemory.class);
         assertThat(config.segmentation()).isEqualTo(SegmentConfig.DEFAULT);
+        assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
     }
 
     @Test
@@ -51,6 +66,14 @@ class LogDbConfigTest {
         assertThatThrownBy(() -> new LogDbConfig(storage, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("segmentation");
+    }
+
+    @Test
+    void shouldRejectNullReadVisibility() {
+        var storage = new StorageConfig.InMemory();
+        assertThatThrownBy(() -> new LogDbConfig(storage, SegmentConfig.DEFAULT, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("readVisibility");
     }
 
     @Test

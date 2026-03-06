@@ -202,7 +202,7 @@ final class NativeInterop {
 
     static LogHandle logOpen(int storageType, String slatedbPath,
                              MemorySegment objectStore, String settingsPath,
-                             long sealIntervalMs) {
+                             long sealIntervalMs, ReadVisibility readVisibility) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment config = opendata_log_config_t.allocate(arena);
             opendata_log_config_t.storage_type(config, (byte) storageType);
@@ -210,6 +210,7 @@ final class NativeInterop {
             opendata_log_config_t.object_store(config, objectStore);
             opendata_log_config_t.settings_path(config, marshalNullableCString(arena, settingsPath));
             opendata_log_config_t.seal_interval_ms(config, sealIntervalMs);
+            opendata_log_config_t.read_visibility(config, marshalReadVisibility(readVisibility));
 
             MemorySegment outLog = arena.allocate(Native.C_POINTER);
             checkResult(Native.opendata_log_open(arena, config, outLog));
@@ -456,6 +457,13 @@ final class NativeInterop {
             nativeValues.setAtIndex(Native.C_POINTER, i, valueData);
             valueLens.setAtIndex(Native.C_LONG, i, totalLen);
         }
+    }
+
+    private static byte marshalReadVisibility(ReadVisibility readVisibility) {
+        return switch (readVisibility) {
+            case MEMORY -> (byte) Native.OPENDATA_LOG_READ_VISIBILITY_MEMORY();
+            case REMOTE -> (byte) Native.OPENDATA_LOG_READ_VISIBILITY_REMOTE();
+        };
     }
 
     private static MemorySegment marshalSeqRange(Arena arena, long startSequence) {

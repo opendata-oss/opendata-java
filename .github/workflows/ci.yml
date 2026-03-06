@@ -29,8 +29,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checkout opendata
-        # TODO: revert to main after opendata-oss/opendata#298 merges
-        run: git clone --depth 1 --branch log-c-read-visibility-enum https://github.com/opendata-oss/opendata.git ../opendata
+        run: git clone --depth 1 https://github.com/opendata-oss/opendata.git ../opendata
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

@@ -1,5 +1,14 @@
 subprojects {
     apply plugin: 'java-library'
+    apply plugin: 'maven-publish'
+
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+            }
+        }
+    }
 
     group = 'dev.opendata'
     version = '0.1.0-SNAPSHOT'

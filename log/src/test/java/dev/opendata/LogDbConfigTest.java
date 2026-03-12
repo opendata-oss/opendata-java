@@ -19,10 +19,12 @@ class LogDbConfigTest {
         assertThat(config.storage()).isEqualTo(storage);
         assertThat(config.segmentation()).isEqualTo(segmentation);
         assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
+        assertThat(config.compactionMode()).isEqualTo(CompactionMode.DEFAULT);
+        assertThat(config.separateCompactionRuntime()).isFalse();
     }
 
     @Test
-    void shouldCreateWithAllParameters() {
+    void shouldCreateWithStorageSegmentationAndReadVisibility() {
         var storage = new StorageConfig.InMemory();
         var segmentation = SegmentConfig.withSealInterval(3600_000);
 
@@ -31,6 +33,23 @@ class LogDbConfigTest {
         assertThat(config.storage()).isEqualTo(storage);
         assertThat(config.segmentation()).isEqualTo(segmentation);
         assertThat(config.readVisibility()).isEqualTo(ReadVisibility.REMOTE);
+        assertThat(config.compactionMode()).isEqualTo(CompactionMode.DEFAULT);
+        assertThat(config.separateCompactionRuntime()).isFalse();
+    }
+
+    @Test
+    void shouldCreateWithAllParameters() {
+        var storage = new StorageConfig.InMemory();
+        var segmentation = SegmentConfig.withSealInterval(3600_000);
+
+        var config = new LogDbConfig(storage, segmentation, ReadVisibility.REMOTE,
+                CompactionMode.L0_ONLY, true);
+
+        assertThat(config.storage()).isEqualTo(storage);
+        assertThat(config.segmentation()).isEqualTo(segmentation);
+        assertThat(config.readVisibility()).isEqualTo(ReadVisibility.REMOTE);
+        assertThat(config.compactionMode()).isEqualTo(CompactionMode.L0_ONLY);
+        assertThat(config.separateCompactionRuntime()).isTrue();
     }
 
     @Test
@@ -42,6 +61,8 @@ class LogDbConfigTest {
         assertThat(config.storage()).isEqualTo(storage);
         assertThat(config.segmentation()).isEqualTo(SegmentConfig.DEFAULT);
         assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
+        assertThat(config.compactionMode()).isEqualTo(CompactionMode.DEFAULT);
+        assertThat(config.separateCompactionRuntime()).isFalse();
     }
 
     @Test
@@ -51,6 +72,8 @@ class LogDbConfigTest {
         assertThat(config.storage()).isInstanceOf(StorageConfig.InMemory.class);
         assertThat(config.segmentation()).isEqualTo(SegmentConfig.DEFAULT);
         assertThat(config.readVisibility()).isEqualTo(ReadVisibility.MEMORY);
+        assertThat(config.compactionMode()).isEqualTo(CompactionMode.DEFAULT);
+        assertThat(config.separateCompactionRuntime()).isFalse();
     }
 
     @Test
@@ -74,6 +97,15 @@ class LogDbConfigTest {
         assertThatThrownBy(() -> new LogDbConfig(storage, SegmentConfig.DEFAULT, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("readVisibility");
+    }
+
+    @Test
+    void shouldRejectNullCompactionMode() {
+        var storage = new StorageConfig.InMemory();
+        assertThatThrownBy(() -> new LogDbConfig(storage, SegmentConfig.DEFAULT,
+                ReadVisibility.MEMORY, null, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("compactionMode");
     }
 
     @Test

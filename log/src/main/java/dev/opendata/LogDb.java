@@ -40,19 +40,23 @@ public class LogDb implements Closeable, LogRead {
                 ? config.segmentation().sealIntervalMs()
                 : -1;
         ReadVisibility readVisibility = config.readVisibility();
+        CompactionMode compactionMode = config.compactionMode();
+        boolean separateCompactionRuntime = config.separateCompactionRuntime();
 
         switch (storage) {
             case StorageConfig.InMemory() -> {
                 try (NativeInterop.ObjectStoreHandle objectStore = NativeInterop.objectStoreInMemory()) {
                     NativeInterop.LogHandle logHandle = NativeInterop.logOpen(
-                            0, null, objectStore.segment(), null, sealIntervalMs, readVisibility);
+                            0, null, objectStore.segment(), null, sealIntervalMs, readVisibility,
+                            compactionMode, separateCompactionRuntime);
                     return new LogDb(logHandle);
                 }
             }
             case StorageConfig.SlateDb slateDb -> {
                 try (NativeInterop.ObjectStoreHandle objectStore = NativeInterop.resolveObjectStore(slateDb.objectStore())) {
                     NativeInterop.LogHandle logHandle = NativeInterop.logOpen(
-                            1, slateDb.path(), objectStore.segment(), slateDb.settingsPath(), sealIntervalMs, readVisibility);
+                            1, slateDb.path(), objectStore.segment(), slateDb.settingsPath(), sealIntervalMs, readVisibility,
+                            compactionMode, separateCompactionRuntime);
                     return new LogDb(logHandle);
                 }
             }

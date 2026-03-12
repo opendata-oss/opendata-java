@@ -6,16 +6,21 @@ import dev.opendata.common.StorageConfig;
  * Configuration for opening a {@link LogDb}.
  *
  * <p>This record holds all the settings needed to initialize a log instance,
- * including storage backend configuration, segmentation settings, and read visibility.
+ * including storage backend configuration, segmentation settings, read visibility,
+ * and compaction behavior.
  *
- * @param storage        storage backend configuration
- * @param segmentation   segmentation configuration
- * @param readVisibility controls which data is visible to reads
+ * @param storage                    storage backend configuration
+ * @param segmentation               segmentation configuration
+ * @param readVisibility             controls which data is visible to reads
+ * @param compactionMode             compaction scheduling mode
+ * @param separateCompactionRuntime  when true, compaction runs on a dedicated runtime
  */
 public record LogDbConfig(
         StorageConfig storage,
         SegmentConfig segmentation,
-        ReadVisibility readVisibility
+        ReadVisibility readVisibility,
+        CompactionMode compactionMode,
+        boolean separateCompactionRuntime
 ) {
 
     /**
@@ -24,7 +29,7 @@ public record LogDbConfig(
      * @param storage storage backend configuration
      */
     public LogDbConfig(StorageConfig storage) {
-        this(storage, SegmentConfig.DEFAULT, ReadVisibility.MEMORY);
+        this(storage, SegmentConfig.DEFAULT, ReadVisibility.MEMORY, CompactionMode.DEFAULT, false);
     }
 
     /**
@@ -34,7 +39,18 @@ public record LogDbConfig(
      * @param segmentation segmentation configuration
      */
     public LogDbConfig(StorageConfig storage, SegmentConfig segmentation) {
-        this(storage, segmentation, ReadVisibility.MEMORY);
+        this(storage, segmentation, ReadVisibility.MEMORY, CompactionMode.DEFAULT, false);
+    }
+
+    /**
+     * Creates a config with the specified storage, segmentation, and read visibility.
+     *
+     * @param storage        storage backend configuration
+     * @param segmentation   segmentation configuration
+     * @param readVisibility controls which data is visible to reads
+     */
+    public LogDbConfig(StorageConfig storage, SegmentConfig segmentation, ReadVisibility readVisibility) {
+        this(storage, segmentation, readVisibility, CompactionMode.DEFAULT, false);
     }
 
     public LogDbConfig {
@@ -46,6 +62,9 @@ public record LogDbConfig(
         }
         if (readVisibility == null) {
             throw new IllegalArgumentException("readVisibility must not be null");
+        }
+        if (compactionMode == null) {
+            throw new IllegalArgumentException("compactionMode must not be null");
         }
     }
 

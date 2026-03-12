@@ -202,7 +202,8 @@ final class NativeInterop {
 
     static LogHandle logOpen(int storageType, String slatedbPath,
                              MemorySegment objectStore, String settingsPath,
-                             long sealIntervalMs, ReadVisibility readVisibility) {
+                             long sealIntervalMs, ReadVisibility readVisibility,
+                             CompactionMode compactionMode, boolean separateCompactionRuntime) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment config = opendata_log_config_t.allocate(arena);
             opendata_log_config_t.storage_type(config, (byte) storageType);
@@ -211,6 +212,8 @@ final class NativeInterop {
             opendata_log_config_t.settings_path(config, marshalNullableCString(arena, settingsPath));
             opendata_log_config_t.seal_interval_ms(config, sealIntervalMs);
             opendata_log_config_t.read_visibility(config, marshalReadVisibility(readVisibility));
+            opendata_log_config_t.compaction_mode(config, marshalCompactionMode(compactionMode));
+            opendata_log_config_t.separate_compaction_runtime(config, separateCompactionRuntime);
 
             MemorySegment outLog = arena.allocate(Native.C_POINTER);
             checkResult(Native.opendata_log_open(arena, config, outLog));
@@ -463,6 +466,13 @@ final class NativeInterop {
         return switch (readVisibility) {
             case MEMORY -> (byte) Native.OPENDATA_LOG_READ_VISIBILITY_MEMORY();
             case REMOTE -> (byte) Native.OPENDATA_LOG_READ_VISIBILITY_REMOTE();
+        };
+    }
+
+    private static byte marshalCompactionMode(CompactionMode compactionMode) {
+        return switch (compactionMode) {
+            case DEFAULT -> (byte) Native.OPENDATA_LOG_COMPACTION_DEFAULT();
+            case L0_ONLY -> (byte) Native.OPENDATA_LOG_COMPACTION_L0_ONLY();
         };
     }
 

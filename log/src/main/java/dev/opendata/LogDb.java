@@ -34,6 +34,7 @@ public class LogDb implements Closeable, LogRead {
         if (config == null) {
             throw new IllegalArgumentException("config must not be null");
         }
+        NativeInterop.ensureTracingInitialized();
 
         StorageConfig storage = config.storage();
         long sealIntervalMs = config.segmentation().sealIntervalMs() != null

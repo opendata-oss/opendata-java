@@ -48,7 +48,15 @@ final class NativeInterop {
     private static final int OPENDATA_LOG_ERROR_QUEUE_FULL = 5;
     private static final int OPENDATA_LOG_ERROR_TIMEOUT = 6;
 
+    private static final AtomicBoolean TRACING_INITIALIZED = new AtomicBoolean(false);
+
     private NativeInterop() {
+    }
+
+    static void ensureTracingInitialized() {
+        if (TRACING_INITIALIZED.compareAndSet(false, true)) {
+            Native.opendata_log_init_tracing();
+        }
     }
 
     // =========================================================================

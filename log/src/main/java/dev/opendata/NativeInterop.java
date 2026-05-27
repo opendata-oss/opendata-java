@@ -146,6 +146,19 @@ final class NativeInterop {
         }
     }
 
+    static final class SubscriptionHandle extends NativeHandle {
+        SubscriptionHandle(MemorySegment segment) {
+            super("Subscription", segment);
+        }
+
+        @Override
+        protected void closeNative(MemorySegment segment) {
+            try (Arena arena = Arena.ofConfined()) {
+                checkResult(Native.opendata_log_unsubscribe_durable(arena, segment));
+            }
+        }
+    }
+
     // =========================================================================
     // Iterator result
     // =========================================================================
@@ -224,24 +237,41 @@ final class NativeInterop {
         }
     }
 
-    static AppendResult logTryAppend(LogHandle handle, Record[] records) {
+    static long logTryAppend(LogHandle handle, Record[] records) {
         return doAppend(handle.segment(), records, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
                 Native.opendata_log_try_append(arena, seg, keys, keyLens, vals, valLens, count, outSeq));
     }
 
-    static AppendResult logTryAppend(LogHandle handle, RecordBatch batch) {
+    static long logTryAppend(LogHandle handle, RecordBatch batch) {
         return doAppendBatch(handle.segment(), batch, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
                 Native.opendata_log_try_append(arena, seg, keys, keyLens, vals, valLens, count, outSeq));
     }
 
-    static AppendResult logAppendTimeout(LogHandle handle, Record[] records, long timeoutMs) {
+    static long logAppendTimeout(LogHandle handle, Record[] records, long timeoutMs) {
         return doAppend(handle.segment(), records, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
                 Native.opendata_log_append_timeout(arena, seg, keys, keyLens, vals, valLens, count, timeoutMs, outSeq));
     }
 
-    static AppendResult logAppendTimeout(LogHandle handle, RecordBatch batch, long timeoutMs) {
+    static long logAppendTimeout(LogHandle handle, RecordBatch batch, long timeoutMs) {
         return doAppendBatch(handle.segment(), batch, (arena, seg, keys, keyLens, vals, valLens, count, outSeq) ->
                 Native.opendata_log_append_timeout(arena, seg, keys, keyLens, vals, valLens, count, timeoutMs, outSeq));
+    }
+
+    static SubscriptionHandle subscribeDurable(LogHandle handle, MemorySegment callbackStub) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment outSub = arena.allocate(Native.C_POINTER);
+            checkResult(Native.opendata_log_subscribe_durable(
+                    arena, handle.segment(), callbackStub, MemorySegment.NULL, outSub));
+            return new SubscriptionHandle(outSub.get(Native.C_POINTER, 0));
+        }
+    }
+
+    static long durableSequence(LogHandle handle) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment outSeq = arena.allocate(ValueLayout.JAVA_LONG);
+            checkResult(Native.opendata_log_durable_sequence(arena, handle.segment(), outSeq));
+            return outSeq.get(ValueLayout.JAVA_LONG, 0);
+        }
     }
 
     static IteratorHandle logScan(LogHandle handle, byte[] key, long startSequence) {
@@ -332,7 +362,7 @@ final class NativeInterop {
                              long count, MemorySegment outSeq);
     }
 
-    private static AppendResult doAppend(MemorySegment handle, Record[] records, AppendCall call) {
+    private static long doAppend(MemorySegment handle, Record[] records, AppendCall call) {
         int count = records.length;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nativeKeys = arena.allocate(Native.C_POINTER, count);
@@ -346,12 +376,11 @@ final class NativeInterop {
             checkResult(call.invoke(arena, handle,
                     nativeKeys, keyLens, nativeValues, valueLens, count, outSeq));
 
-            long startSeq = outSeq.get(ValueLayout.JAVA_LONG, 0);
-            return new AppendResult(startSeq, records[0].timestampMs());
+            return outSeq.get(ValueLayout.JAVA_LONG, 0);
         }
     }
 
-    private static AppendResult doAppendBatch(MemorySegment handle, RecordBatch batch, AppendCall call) {
+    private static long doAppendBatch(MemorySegment handle, RecordBatch batch, AppendCall call) {
         int count = batch.count();
         if (count == 0) {
             throw new IllegalArgumentException("batch must not be empty");
@@ -382,8 +411,7 @@ final class NativeInterop {
             checkResult(call.invoke(arena, handle,
                     nativeKeys, keyLens, nativeValues, valueLens, count, outSeq));
 
-            long startSeq = outSeq.get(ValueLayout.JAVA_LONG, 0);
-            return new AppendResult(startSeq, batch.firstTimestampMs());
+            return outSeq.get(ValueLayout.JAVA_LONG, 0);
         }
     }
 

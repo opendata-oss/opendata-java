@@ -53,7 +53,7 @@ class LogDbIntegrationTest {
 
             AppendResult result = log.tryAppend(key, value);
 
-            assertThat(result.sequence()).isEqualTo(0);
+            assertThat(result.startSequence()).isEqualTo(0);
 
             try (LogScanIterator iter = log.scan(key, 0)) {
                 List<LogEntry> entries = collect(iter);
@@ -77,7 +77,7 @@ class LogDbIntegrationTest {
 
             AppendResult result = log.tryAppend(records);
 
-            assertThat(result.sequence()).isEqualTo(0);
+            assertThat(result.startSequence()).isEqualTo(0);
 
             try (LogScanIterator iter = log.scan(key, 0)) {
                 List<LogEntry> entries = collect(iter);
@@ -101,7 +101,7 @@ class LogDbIntegrationTest {
             log.tryAppend(key, "second".getBytes(StandardCharsets.UTF_8));
             AppendResult third = log.tryAppend(key, "third".getBytes(StandardCharsets.UTF_8));
 
-            assertThat(third.sequence()).isEqualTo(2);
+            assertThat(third.startSequence()).isEqualTo(2);
 
             try (LogScanIterator iter = log.scan(key, 0)) {
                 List<LogEntry> entries = collect(iter);
@@ -499,7 +499,7 @@ class LogDbIntegrationTest {
             byte[] value = "timeout-value".getBytes(StandardCharsets.UTF_8);
 
             AppendResult result = log.appendTimeout(key, value, 5000);
-            assertThat(result.sequence()).isEqualTo(0);
+            assertThat(result.startSequence()).isEqualTo(0);
 
             try (LogScanIterator iter = log.scan(key, 0)) {
                 List<LogEntry> entries = collect(iter);
@@ -572,7 +572,7 @@ class LogDbIntegrationTest {
                 batch.add(key, "batch-2".getBytes(StandardCharsets.UTF_8), 1002L);
 
                 AppendResult result = log.tryAppend(batch);
-                assertThat(result.sequence()).isEqualTo(0);
+                assertThat(result.startSequence()).isEqualTo(0);
             }
 
             try (LogScanIterator iter = log.scan(key, 0)) {
@@ -599,7 +599,7 @@ class LogDbIntegrationTest {
                 batch.add(key, "value-1".getBytes(StandardCharsets.UTF_8), 501L);
 
                 AppendResult result = log.appendTimeout(batch, 5000);
-                assertThat(result.sequence()).isEqualTo(0);
+                assertThat(result.startSequence()).isEqualTo(0);
             }
 
             try (LogScanIterator iter = log.scan(key, 0)) {
@@ -639,14 +639,14 @@ class LogDbIntegrationTest {
                 batch1.add(key, "a".getBytes(StandardCharsets.UTF_8), 100L);
                 batch1.add(key, "b".getBytes(StandardCharsets.UTF_8), 101L);
                 AppendResult r1 = log.tryAppend(batch1);
-                assertThat(r1.sequence()).isEqualTo(0);
+                assertThat(r1.startSequence()).isEqualTo(0);
             }
 
             try (RecordBatch batch2 = RecordBatch.create()) {
                 batch2.add(key, "c".getBytes(StandardCharsets.UTF_8), 200L);
                 batch2.add(key, "d".getBytes(StandardCharsets.UTF_8), 201L);
                 AppendResult r2 = log.tryAppend(batch2);
-                assertThat(r2.sequence()).isEqualTo(2);
+                assertThat(r2.startSequence()).isEqualTo(2);
             }
 
             try (LogScanIterator iter = log.scan(key, 0)) {

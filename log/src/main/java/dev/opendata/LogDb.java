@@ -19,9 +19,11 @@ import java.io.Closeable;
 public class LogDb implements Closeable, LogRead {
 
     private final NativeInterop.LogHandle handle;
+    private final DurableTracker durableTracker;
 
     private LogDb(NativeInterop.LogHandle handle) {
         this.handle = handle;
+        this.durableTracker = new DurableTracker(handle);
     }
 
     /**
@@ -80,7 +82,8 @@ public class LogDb implements Closeable, LogRead {
      */
     public AppendResult tryAppend(Record[] records) {
         checkNotClosed();
-        return NativeInterop.logTryAppend(handle, records);
+        long startSeq = NativeInterop.logTryAppend(handle, records);
+        return makeAppendResult(startSeq, records.length, records[0].timestampMs());
     }
 
     /**
@@ -94,7 +97,8 @@ public class LogDb implements Closeable, LogRead {
      */
     public AppendResult tryAppend(RecordBatch batch) {
         checkNotClosed();
-        return NativeInterop.logTryAppend(handle, batch);
+        long startSeq = NativeInterop.logTryAppend(handle, batch);
+        return makeAppendResult(startSeq, batch.count(), batch.firstTimestampMs());
     }
 
     /**
@@ -127,7 +131,8 @@ public class LogDb implements Closeable, LogRead {
      */
     public AppendResult appendTimeout(Record[] records, long timeoutMs) {
         checkNotClosed();
-        return NativeInterop.logAppendTimeout(handle, records, timeoutMs);
+        long startSeq = NativeInterop.logAppendTimeout(handle, records, timeoutMs);
+        return makeAppendResult(startSeq, records.length, records[0].timestampMs());
     }
 
     /**
@@ -143,7 +148,8 @@ public class LogDb implements Closeable, LogRead {
      */
     public AppendResult appendTimeout(RecordBatch batch, long timeoutMs) {
         checkNotClosed();
-        return NativeInterop.logAppendTimeout(handle, batch, timeoutMs);
+        long startSeq = NativeInterop.logAppendTimeout(handle, batch, timeoutMs);
+        return makeAppendResult(startSeq, batch.count(), batch.firstTimestampMs());
     }
 
     /**
@@ -180,7 +186,15 @@ public class LogDb implements Closeable, LogRead {
 
     @Override
     public void close() {
+        // Close the native log first so the tokio task driving durable callbacks
+        // exits cleanly before we tear down the upcall arena.
         handle.close();
+        durableTracker.close();
+    }
+
+    private AppendResult makeAppendResult(long startSeq, int count, long timestamp) {
+        long endSeq = startSeq + count;
+        return new AppendResult(startSeq, endSeq, timestamp, durableTracker.register(endSeq));
     }
 
     private void checkNotClosed() {

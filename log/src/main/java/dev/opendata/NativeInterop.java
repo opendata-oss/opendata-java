@@ -351,6 +351,42 @@ final class NativeInterop {
     }
 
     // =========================================================================
+    // Telemetry / logging
+    // =========================================================================
+
+    static void initTelemetry() {
+        try (Arena arena = Arena.ofConfined()) {
+            checkResult(Native.opendata_log_init_telemetry(arena));
+        }
+    }
+
+    static String renderMetrics() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment outData = arena.allocate(Native.C_POINTER);
+            MemorySegment outLen = arena.allocate(Native.C_LONG);
+            checkResult(Native.opendata_log_render_metrics(arena, outData, outLen));
+
+            MemorySegment dataPtr = outData.get(Native.C_POINTER, 0);
+            long len = outLen.get(Native.C_LONG, 0);
+            if (dataPtr.equals(MemorySegment.NULL) || len == 0) {
+                return "";
+            }
+            try {
+                byte[] bytes = dataPtr.reinterpret(len).toArray(ValueLayout.JAVA_BYTE);
+                return new String(bytes, StandardCharsets.UTF_8);
+            } finally {
+                freeBytes(dataPtr, len);
+            }
+        }
+    }
+
+    static void enableLogging(String filter) {
+        try (Arena arena = Arena.ofConfined()) {
+            checkResult(Native.opendata_log_enable_logging(arena, marshalNullableCString(arena, filter)));
+        }
+    }
+
+    // =========================================================================
     // Shared append / scan helpers
     // =========================================================================
 
